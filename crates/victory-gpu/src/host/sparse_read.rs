@@ -1,0 +1,414 @@
+//! Reader strategy hints, never page contents or a cached VM map.
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
+
+pub(super) const LARGE: usize = 64 << 10;
+const PAGE: usize = 4 << 10;
+const SHARDS: usize = 32;
+const SLOTS: usize = 64;
+
+type Key = (usize, usize);
+pub(super) struct Hints([Mutex<[Key; SLOTS]>; SHARDS]);
+
+impl Hints {
+    pub(super) const fn new() -> Self {
+        Self([const { Mutex::new([(0, 0); SLOTS]) }; SHARDS])
+    }
+
+    fn bucket(&self, address: usize, len: usize) -> (&Mutex<[Key; SLOTS]>, usize) {
+        let mut hash = DefaultHasher::new();
+        (address, len).hash(&mut hash);
+        let slot = hash.finish() as usize % (SHARDS * SLOTS);
+        (&self.0[slot / SLOTS], slot % SLOTS)
+    }
+
+    pub(super) fn has(&self, address: usize, len: usize) -> bool {
+        let (shard, slot) = self.bucket(address, len);
+        shard.lock().unwrap_or_else(|e| e.into_inner())[slot] == (address, len)
+    }
+
+    pub(super) fn set(&self, address: usize, len: usize, sparse: bool) {
+        let (shard, slot) = self.bucket(address, len);
+        let mut entries = shard.lock().unwrap_or_else(|e| e.into_inner());
+        if sparse {
+            entries[slot] = (address, len);
+        } else if entries[slot] == (address, len) {
+            // Another range may have replaced this slot during the walk.
+            entries[slot] = (0, 0);
+        }
+    }
+}
+
+pub(super) static HINTS: Hints = Hints::new();
+// Small descriptors are much more numerous. Their failures must never
+// evict the already learned strategy for a large source.
+pub(super) static SMALL_HINTS: Hints = Hints::new();
+
+pub(super) fn small_enabled() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_SMALL_SPARSE_READ").is_some_and(|v| v == "1"))
+}
+
+pub(super) fn table(len: usize, large_on: bool, small_on: bool) -> Option<&'static Hints> {
+    if len >= LARGE {
+        large_on.then_some(&HINTS)
+    } else {
+        small_on.then_some(&SMALL_HINTS)
+    }
+}
+
+pub(super) fn enabled() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_SPARSE_READ_HINT").is_some_and(|v| v == "1"))
+}
+
+pub(super) fn class(address: usize, len: usize) -> usize {
+    if one_page(address, len) {
+        0
+    } else if len < LARGE {
+        1
+    } else if len < 1 << 20 {
+        2
+    } else {
+        3
+    }
+}
+
+pub(super) fn one_page(address: usize, len: usize) -> bool {
+    len <= PAGE - address % PAGE
+}
+
+// Actual initial ReadProcessMemory calls and failures, hinted walks,
+// entirely readable hinted walks, skipped same-fragment retries, requested bytes.
+static COUNTS: [[AtomicU64; 6]; 4] = [const { [const { AtomicU64::new(0) }; 6] }; 4];
+
+fn count(class: usize, values: [u64; 6]) {
+    for (counter, value) in COUNTS[class].iter().zip(values) {
+        if value != 0 {
+            counter.fetch_add(value, Ordering::Relaxed);
+        }
+    }
+}
+
+pub(super) fn initial(address: usize, len: usize, success: bool) {
+    count(
+        class(address, len),
+        [1, u64::from(!success), 0, 0, 0, len as u64],
+    );
+}
+
+pub(super) fn hinted(address: usize, len: usize, readable: bool, skipped: u64) {
+    count(
+        class(address, len),
+        [0, 0, 1, u64::from(readable), skipped, len as u64],
+    );
+}
+
+pub(super) fn skipped(address: usize, len: usize, retries: u64) {
+    if retries != 0 {
+        count(class(address, len), [0, 0, 0, 0, retries, 0]);
+    }
+}
+
+pub(super) fn take_counts() -> [[u64; 6]; 4] {
+    COUNTS
+        .each_ref()
+        .map(|row| row.each_ref().map(|n| n.swap(0, Ordering::Relaxed)))
+}
+
+fn parts(address: usize, len: usize, step: usize, mut f: impl FnMut(usize, usize)) {
+    let mut offset = 0;
+    while offset < len {
+        let at = address.wrapping_add(offset);
+        let n = (step - at % step).min(len - offset);
+        f(at, n);
+        offset += n;
+    }
+}
+
+/// Split an unreadable span using the original 64 KiB / 4 KiB boundaries.
+/// With deduplication, an identical kernel read that failed in this copy
+/// is conclusive for that one page fragment. A future copy reads it again.
+pub(super) fn recover(
+    address: usize,
+    len: usize,
+    known_failed: bool,
+    dedup: bool,
+    read: &mut impl FnMut(usize, usize) -> bool,
+    zero: &mut impl FnMut(usize, usize),
+) -> u64 {
+    if known_failed && dedup && one_page(address, len) {
+        zero(address, len);
+        return 2;
+    }
+    let mut skipped = 0;
+    parts(address, len, LARGE, |at, n| {
+        if read(at, n) {
+            return;
+        }
+        if dedup && one_page(at, n) {
+            zero(at, n);
+            skipped += 1;
+        } else {
+            parts(at, n, PAGE, |at, n| {
+                if !read(at, n) {
+                    zero(at, n)
+                }
+            });
+        }
+    });
+    skipped
+}
+
+/// Read entirely from the current VM map. 'true' means every region was
+/// readable and read successfully; the caller can then discard the hint.
+pub(super) fn walk(
+    address: usize,
+    len: usize,
+    dedup: bool,
+    mut query: impl FnMut(usize) -> Option<(usize, bool)>,
+    mut read: impl FnMut(usize, usize) -> bool,
+    mut zero: impl FnMut(usize, usize),
+) -> (bool, u64) {
+    let mut offset = 0;
+    let mut readable = true;
+    let mut skipped = 0;
+    while offset < len {
+        let at = address.wrapping_add(offset);
+        let remaining = len - offset;
+        let Some((length, can_read)) = query(at).filter(|(n, _)| *n > 0) else {
+            skipped += recover(at, remaining, false, dedup, &mut read, &mut zero);
+            return (false, skipped);
+        };
+        let n = remaining.min(length);
+        if !can_read {
+            zero(at, n);
+            readable = false;
+        } else if !read(at, n) {
+            skipped += recover(at, n, true, dedup, &mut read, &mut zero);
+            readable = false;
+        }
+        offset += n;
+    }
+    (readable, skipped)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    #[test]
+    fn a_failed_page_fragment_is_zeroed_without_rereading_any_byte() {
+        let mut calls = vec![];
+        let mut zeroed = vec![];
+        assert_eq!(
+            recover(
+                PAGE + 13,
+                137,
+                true,
+                true,
+                &mut |at, n| {
+                    calls.push((at, n));
+                    false
+                },
+                &mut |at, n| zeroed.push((at, n))
+            ),
+            2
+        );
+        assert!(calls.is_empty());
+        assert_eq!(zeroed, [(PAGE + 13, 137)]);
+        assert_eq!(
+            recover(
+                PAGE + 13,
+                137,
+                true,
+                false,
+                &mut |at, n| {
+                    calls.push((at, n));
+                    false
+                },
+                &mut |_, _| {}
+            ),
+            0
+        );
+        assert_eq!(calls, [(PAGE + 13, 137), (PAGE + 13, 137)]);
+    }
+
+    #[test]
+    fn a_short_read_across_a_page_keeps_its_readable_fragment() {
+        let memory = RefCell::new([0x33; 4]);
+        let at = PAGE - 2;
+        recover(
+            at,
+            4,
+            true,
+            true,
+            &mut |addr, n| {
+                if addr + n <= PAGE {
+                    memory.borrow_mut()[addr - at..addr - at + n].fill(0xaa);
+                    true
+                } else {
+                    false
+                }
+            },
+            &mut |addr, n| memory.borrow_mut()[addr - at..addr - at + n].fill(0),
+        );
+        assert_eq!(*memory.borrow(), [0xaa, 0xaa, 0, 0]);
+    }
+
+    #[test]
+    fn a_hinted_walk_sees_holes_mapping_and_data_changes_and_can_be_forgotten() {
+        let hints = Hints::new();
+        let base = 0x100000;
+        let dest = RefCell::new(vec![0xff; LARGE]);
+        let mapped = std::cell::Cell::new(false);
+        let value = std::cell::Cell::new(7);
+        let run = || {
+            walk(
+                base,
+                LARGE,
+                true,
+                |addr| {
+                    let n = PAGE - (addr - base) % PAGE;
+                    Some((n, mapped.get() || (addr - base) / PAGE != 2))
+                },
+                |addr, n| {
+                    let offset = addr - base;
+                    dest.borrow_mut()[offset..offset + n].fill(value.get());
+                    true
+                },
+                |addr, n| dest.borrow_mut()[addr - base..addr - base + n].fill(0),
+            )
+        };
+        let (readable, skipped) = run();
+        assert!(!readable);
+        assert_eq!(skipped, 0);
+        hints.set(base, LARGE, !readable);
+        assert!(hints.has(base, LARGE));
+        assert!(dest.borrow()[2 * PAGE..3 * PAGE].iter().all(|v| *v == 0));
+        assert!(dest.borrow()[3 * PAGE..].iter().all(|v| *v == 7));
+        mapped.set(true);
+        value.set(41);
+        let (readable, _) = run();
+        hints.set(base, LARGE, !readable);
+        assert!(readable && !hints.has(base, LARGE));
+        assert!(dest.borrow().iter().all(|v| *v == 41));
+    }
+
+    #[test]
+    fn mapping_race_or_query_failure_recovers_live_content() {
+        let dest = RefCell::new(vec![0xee; 2 * PAGE]);
+        let mut read_calls = vec![];
+        let (fully, skipped) = walk(
+            0,
+            2 * PAGE,
+            true,
+            |at| if at == 0 { Some((PAGE, true)) } else { None },
+            |at, n| {
+                read_calls.push((at, n));
+                dest.borrow_mut()[at..at + n].fill(0xcc); // includes partial bytes from a failed read
+                at >= PAGE
+            },
+            |at, n| dest.borrow_mut()[at..at + n].fill(0),
+        );
+        assert!(!fully);
+        assert_eq!(skipped, 2);
+        assert_eq!(read_calls, [(0, PAGE), (PAGE, PAGE)]);
+        assert!(dest.borrow()[..PAGE].iter().all(|v| *v == 0));
+        assert!(dest.borrow()[PAGE..].iter().all(|v| *v == 0xcc));
+    }
+
+    #[test]
+    fn counters_distinguish_actual_initial_failures_from_hinted_walks_and_skipped_calls() {
+        let hints = Hints::new();
+        let base = 4 * LARGE;
+        // 100 copies of a range with a hole, then a remap, then a fully readable copy.
+        for iteration in 0..102 {
+            let hole = iteration < 100;
+            let used_hint = hints.has(base, LARGE);
+            if !used_hint {
+                initial(base, LARGE, !hole);
+                if !hole {
+                    continue;
+                }
+            }
+            let (readable, retries) = walk(
+                base,
+                LARGE,
+                true,
+                |at| Some((PAGE, !hole || at != base + PAGE)),
+                |_, _| true,
+                |_, _| {},
+            );
+            if used_hint {
+                hinted(base, LARGE, readable, retries);
+            }
+            hints.set(base, LARGE, !readable);
+        }
+        // 128 small failed reads previously issued two additional, identical reads each.
+        for _ in 0..128 {
+            initial(base + 17, 512, false);
+            let retries = recover(
+                base + 17,
+                512,
+                true,
+                true,
+                &mut |_, _| unreachable!(),
+                &mut |_, _| {},
+            );
+            skipped(base + 17, 512, retries);
+        }
+        let totals = take_counts();
+        assert_eq!(totals[0], [128, 128, 0, 0, 256, 128 * 512]);
+        assert_eq!(totals[2], [2, 1, 100, 1, 0, (102 * LARGE) as u64]);
+        assert!(!hints.has(base, LARGE));
+    }
+
+    #[test]
+    fn small_strategy_is_optional_and_cannot_displace_a_large_hint() {
+        assert!(table(128, true, false).is_none());
+        assert!(table(LARGE, false, true).is_none());
+        let small = table(LARGE - 1, false, true).unwrap();
+        let large = table(LARGE, true, false).unwrap();
+        assert!(!std::ptr::eq(small, large));
+        assert!(std::ptr::eq(table(1, true, true).unwrap(), small));
+        assert!(std::ptr::eq(table(2 * LARGE, true, true).unwrap(), large));
+    }
+
+    #[test]
+    fn hints_are_exact_bounded_and_collision_safe() {
+        assert!(std::mem::size_of::<Hints>() < 40 * 1024);
+        let hints = Hints::new();
+        let slots: Vec<_> = (0..5000).map(|n| (n * 4096, LARGE)).collect();
+        let first = slots[0];
+        let (shard, slot) = hints.bucket(first.0, first.1);
+        let second = (1..200_000)
+            .map(|n| (n * 4096, LARGE))
+            .find(|k| {
+                let (s, n) = hints.bucket(k.0, k.1);
+                std::ptr::eq(s, shard) && n == slot
+            })
+            .unwrap();
+        hints.set(first.0, first.1, true);
+        hints.set(second.0, second.1, true);
+        assert!(!hints.has(first.0, first.1));
+        assert!(hints.has(second.0, second.1));
+        assert!(!hints.has(second.0, second.1 + 1));
+        hints.set(first.0, first.1, false);
+        assert!(hints.has(second.0, second.1));
+        for (at, n) in slots {
+            hints.set(at, n, true);
+        }
+        assert_eq!(
+            [
+                class(13, 10),
+                class(PAGE - 1, 3),
+                class(5, LARGE),
+                class(8, 1 << 20)
+            ],
+            [0, 1, 2, 3]
+        );
+    }
+}

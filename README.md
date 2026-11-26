@@ -76,7 +76,21 @@ Les deux tests de dessin ont besoin d’un périphérique D3D12 et des composant
 
 ## Lancer un essai sur Mac
 
-Le lanceur accepte des chemins locaux, y compris un volume externe monté. Il attend un moteur Sikarugir 10.0 révision 6 avec D3DMetal 4.0 bêta 3 installé, une bottle déjà configurée avec son disque Z sur la racine du Mac, le binaire Windows construit ci-dessus et le répertoire du titre préparé par son propriétaire. Le SHA des composants du runtime est contrôlé à l’ouverture. Python 3.11 ou ultérieur est nécessaire sur le Mac. Les données de test, le titre, la bottle, les runtimes et les paquets de shaders dérivés sont à fournir localement.
+### Préparer le Mac avec Uncork
+
+1. Sur le Mac Apple Silicon, installez Uncork, puis ouvrez l’application. Les essais de ce fork ont utilisé Uncork 1.7.7. [Téléchargement officiel d’Uncork](https://uncorkmac.com/)
+2. Dans les vérifications de l’environnement d’Uncork, acceptez la licence Apple pour télécharger les bibliothèques graphiques. Installez le moteur Wine **Sikarugir 10.0 révision 6** et connectez **D3DMetal**.
+3. Créez ou ouvrez une bouteille Wine dédiée à Victory et sélectionnez **D3DMetal 4.0 bêta 3** pour cette bouteille. Repérez son dossier, celui qui contient `drive_c` et `dosdevices`. Dans la configuration testée, le lecteur `Z:` de la bouteille pointe vers `/` sur le Mac.
+
+### Démarrer Victory
+
+Depuis la racine du dépôt, utilisez Python 3.11 ou ultérieur. `SIKARUGIR_ENGINE` désigne le dossier du moteur installé par Uncork. Son emplacement par défaut pour cette version est le suivant.
+
+```sh
+export SIKARUGIR_ENGINE="$HOME/Library/Application Support/winebottle/Runtimes/sikarugir-10.0_6-gptk4.0b3"
+```
+
+Renseignez `VICTORY_BOTTLE` avec le chemin de la bouteille, `VICTORY_EXE` avec celui de `victory.exe` construit ci-dessus, `TITLE_EXE` avec celui de l’exécutable du titre dans votre copie préparée et `RUNS_DIR` avec le dossier où enregistrer les essais. Les chemins peuvent se trouver sur un volume externe monté. Prévisualisez la commande ci-dessous. Au lancement réel, le lanceur vérifie les empreintes SHA-256 des composants du moteur.
 
 ```sh
 python3 tools/macos/run.py \

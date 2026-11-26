@@ -1,32 +1,46 @@
 # Victory sur macOS
 
-Victory est une couche de compatibilité qui traduit les appels d’un titre Xbox Series vers Direct3D 12. Cette branche expérimentale vise le rendu sur les Mac Apple Silicon, avec Wine Sikarugir et D3DMetal 4. Sur un Mac M3 de 16 Gio, le profil Series S permet de dépasser le carton d’introduction et de voir une rue nocturne, ses feux et un personnage. Le parcours 200227 atteint ensuite une voiture avec sa portière ouverte, puis un passage couvert. La ville apparaît sans bandes cinématiques avec une jauge verte en haut à gauche, puis les bandes reviennent sur un plan de côte éclairée. La scène reste trop lente pour être jouable et les parcours se terminent par un arrêt du titre.
+<a href="docs/macos/frame-1872.png"><img src="docs/macos/frame-1872.png" alt="Lumière du jour sur le littoral, au-delà de la ville, pendant la cinématique de Victory" width="960"></a>
 
-![Plan suivant, voiture avec la portière ouverte, essai 200227](docs/macos/voiture.png)
+*Le littoral en plein jour, trame 1872 de l’essai 200227 sur Mac M3.*
 
-![Rue de nuit, personnage au premier plan et profondeur active, essai 200227](docs/macos/rue-profondeur.png)
+Victory traduit les appels d’un titre Xbox Series vers Direct3D 12. Sur un Mac M3 de 16 Gio, le profil Series S sous Wine Sikarugir et D3DMetal 4 affiche la rue de nuit, la voiture, le passage couvert puis le littoral. Le joueur a confirmé que la cinématique continuait quand la jauge verte est apparue. Les copies mémoire prennent encore plusieurs secondes par image et la fin de la cinématique reste à vérifier.
 
-| Rue au premier plan | Feux et matériaux pendant la transition | Personnage et horizon |
-|---|---|---|
-| ![Rue, première vue](docs/macos/rue-1.png) | ![Rue, deuxième vue](docs/macos/rue-2.png) | ![Rue, troisième vue](docs/macos/rue-3.png) |
+## La cinématique en images
 
-Les trois vues de référence proviennent du parcours 191652. Les surfaces très sombres et les matériaux transitoires restent visibles. Les deux grandes images montrent la rue puis la voiture dans le parcours 200227, avec restauration de profondeur active.
+| Captures sur Mac M3 |
+|:---|
+| <a href="docs/macos/202903-frame-1662.png"><img src="docs/macos/202903-frame-1662.png" alt="Silhouette en contre-jour devant une lumière blanche, avec les feux de la ville en arrière-plan" width="760"></a><br>**Contre-jour dans la rue** · essai 202903, trame 1662 |
+| <a href="docs/macos/frame-1864.png"><img src="docs/macos/frame-1864.png" alt="Nuages dorés dans le ciel, avec une jauge verte en haut à gauche" width="760"></a><br>**Ciel orangé au-dessus de la ville** · essai 200227, trame 1864 |
+| <a href="docs/macos/202903-frame-1670.png"><img src="docs/macos/202903-frame-1670.png" alt="Silhouettes au premier plan dans une rue éclairée en bleu" width="760"></a><br>**Éclairage bleu au carrefour** · essai 202903, trame 1670 |
+| <a href="docs/macos/frame-1840.png"><img src="docs/macos/frame-1840.png" alt="Dernières lumières de la rue sur un horizon orange" width="760"></a><br>**Changement de lumière sur l’horizon** · essai 200227, trame 1840 |
 
-## Les neuf plans de 200227
+<details open>
+<summary>Voir les six autres captures de l’essai 200227, du fondu aux bâtiments</summary>
 
-La jauge des trames 1856 et 1864 apparaît encore pendant la cinématique, ce que le joueur a confirmé. Les bandes reviennent au plan de la côte. La prise de contrôle du personnage reste à vérifier. Chaque vignette ouvre la capture complète de 960 × 540.
+| Essai 200227 · D3DMetal 4 |
+|:---|
+| <a href="docs/macos/frame-1808.png"><img src="docs/macos/frame-1808.png" alt="Transition du carton vers le premier plan" width="760"></a><br>**Fondu avant la rue** · trame 1808 |
+| <a href="docs/macos/frame-1816.png"><img src="docs/macos/frame-1816.png" alt="Personnage au premier plan, devant les lumières de la ville" width="760"></a><br>**Personnage devant la ville** · trame 1816 |
+| <a href="docs/macos/frame-1824.png"><img src="docs/macos/frame-1824.png" alt="Rue nocturne avec les feux et les bâtiments en arrière-plan" width="760"></a><br>**Les feux de la rue** · trame 1824 |
+| <a href="docs/macos/frame-1832.png"><img src="docs/macos/frame-1832.png" alt="Voiture de profil avec la portière ouverte" width="760"></a><br>**Voiture au carrefour, portière ouverte** · trame 1832 |
+| <a href="docs/macos/frame-1848.png"><img src="docs/macos/frame-1848.png" alt="Lumières de la ville vues entre des piliers" width="760"></a><br>**Passage couvert** · trame 1848 |
+| <a href="docs/macos/frame-1856.png"><img src="docs/macos/frame-1856.png" alt="Bâtiments de nuit sous un ciel bleu, jauge verte en haut à gauche" width="760"></a><br>**Bâtiments et apparition de la jauge** · trame 1856 |
 
-| 1808 · Transition sombre | 1816 · Personnage dans la rue | 1824 · Rue et feux |
-|---|---|---|
-| [![Transition sombre](docs/macos/frame-1808.png)](docs/macos/frame-1808.png) | [![Personnage dans la rue](docs/macos/frame-1816.png)](docs/macos/frame-1816.png) | [![Rue et feux](docs/macos/frame-1824.png)](docs/macos/frame-1824.png) |
+</details>
 
-| 1832 · Voiture, portière ouverte | 1840 · Horizon orange | 1848 · Passage couvert à piliers |
-|---|---|---|
-| [![Voiture, portière ouverte](docs/macos/frame-1832.png)](docs/macos/frame-1832.png) | [![Horizon orange](docs/macos/frame-1840.png)](docs/macos/frame-1840.png) | [![Passage couvert à piliers](docs/macos/frame-1848.png)](docs/macos/frame-1848.png) |
+<details>
+<summary>Voir les trois captures de référence de la rue dans l’essai 191652</summary>
 
-| 1856 · Ville et jauge verte | 1864 · Ciel éclairé avec la jauge | 1872 · Côte, retour des bandes cinématiques |
-|---|---|---|
-| [![Ville et jauge verte](docs/macos/frame-1856.png)](docs/macos/frame-1856.png) | [![Ciel éclairé avec la jauge](docs/macos/frame-1864.png)](docs/macos/frame-1864.png) | [![Côte, retour des bandes cinématiques](docs/macos/frame-1872.png)](docs/macos/frame-1872.png) |
+Les surfaces sombres et les matériaux qui apparaissent pendant la transition sont visibles sur ces captures du joueur.
+
+| Essai 191652 · rue nocturne |
+|:---|
+| <a href="docs/macos/rue-1.png"><img src="docs/macos/rue-1.png" alt="Les lumières de la rue, entre les silhouettes des poteaux" width="760"></a><br>**Le carrefour avant le changement de plan** |
+| <a href="docs/macos/rue-2.png"><img src="docs/macos/rue-2.png" alt="Reflets clairs au sol pendant le changement de plan" width="760"></a><br>**Les matériaux pendant la transition** |
+| <a href="docs/macos/rue-3.png"><img src="docs/macos/rue-3.png" alt="Le personnage au premier plan et les feux au loin" width="760"></a><br>**Le personnage devant l’horizon** |
+
+</details>
 
 ## État mesuré le 26 novembre 2026
 

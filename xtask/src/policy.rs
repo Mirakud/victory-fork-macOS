@@ -165,6 +165,8 @@ pub fn check(path: &str, content: &[u8]) -> Vec<String> {
             | "docs/macos/frame-1864.png"
             | "docs/macos/frame-1872.png"
             | "docs/macos/encart-monde.png"
+            | "docs/macos/202903-frame-1662.png"
+            | "docs/macos/202903-frame-1670.png"
     ) && content.len() <= MAX_FILE_SIZE
         && content.starts_with(b"\x89PNG\r\n\x1a\n")
         && content.ends_with(b"IEND\xae\x42\x60\x82")

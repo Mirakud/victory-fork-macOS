@@ -1298,7 +1298,7 @@ pub(crate) fn drop_levels(desc: &ResourceDesc) -> u32 {
     }
     let n = n.min(u32::from(desc.mip_levels).saturating_sub(1));
     let (w, h) = (desc.width, u64::from(desc.height));
-    let whole = |side: u64| side % (4 << n) == 0;
+    let whole = |side: u64| side.is_multiple_of(4 << n);
     if n == 0 || w.min(h) < 512 || !whole(w) || !whole(h) {
         return 0;
     }
@@ -2652,7 +2652,7 @@ static PLACED_RAW: std::sync::Mutex<std::collections::BTreeSet<(u64, [u32; 14])>
 static PLACED_TWINS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// See [`PLACED_TWINS`].
-#[cfg(windows)]
+#[cfg(all(windows, feature = "diagnostics"))]
 pub(crate) fn placed_filler_twins() -> u64 {
     PLACED_TWINS.load(std::sync::atomic::Ordering::Relaxed)
 }

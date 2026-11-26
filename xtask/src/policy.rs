@@ -147,18 +147,26 @@ pub fn check(path: &str, content: &[u8]) -> Vec<String> {
     let mut problems = Vec::new();
     let name = path.rsplit('/').next().unwrap_or(path);
     let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
-    // The private Mac fork includes explicitly selected documentation screenshots.
-    // Keep the upstream restrictions for all other images and non-text assets.
+    // Only the reviewed PNGs shown by the private Mac fork's README.
     if matches!(
         path,
-        "docs/macos/rue-1.jpg"
-            | "docs/macos/rue-2.jpg"
-            | "docs/macos/rue-3.jpg"
-            | "docs/macos/rue-profondeur.jpg"
-            | "docs/macos/voiture.jpg"
-    ) && content.len() < MAX_FILE_SIZE
-        && content.starts_with(&[0xff, 0xd8, 0xff])
-        && content.ends_with(&[0xff, 0xd9])
+        "docs/macos/rue-1.png"
+            | "docs/macos/rue-2.png"
+            | "docs/macos/rue-3.png"
+            | "docs/macos/rue-profondeur.png"
+            | "docs/macos/voiture.png"
+            | "docs/macos/frame-1808.png"
+            | "docs/macos/frame-1816.png"
+            | "docs/macos/frame-1824.png"
+            | "docs/macos/frame-1832.png"
+            | "docs/macos/frame-1840.png"
+            | "docs/macos/frame-1848.png"
+            | "docs/macos/frame-1856.png"
+            | "docs/macos/frame-1864.png"
+            | "docs/macos/frame-1872.png"
+    ) && content.len() <= MAX_FILE_SIZE
+        && content.starts_with(b"\x89PNG\r\n\x1a\n")
+        && content.ends_with(b"IEND\xae\x42\x60\x82")
     {
         return problems;
     }

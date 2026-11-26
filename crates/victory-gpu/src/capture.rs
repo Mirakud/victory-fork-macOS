@@ -3,6 +3,7 @@
 //! two (the frames the log reports) is saved as `frame-<n>.png`, at half
 //! size. Only in builds with diagnostics.
 
+mod cadence;
 pub(crate) mod planes;
 
 use std::path::PathBuf;
@@ -53,7 +54,8 @@ pub(crate) fn listed(n: u64) -> bool {
     });
     let first = WORLD.load(std::sync::atomic::Ordering::Relaxed);
     let after = n.wrapping_sub(first);
-    named || first != u64::MAX && ([2, 6, 30, 80].contains(&after) || also.contains(&after))
+    named || first != u64::MAX && (also.contains(&after)
+        || !WORLD_CADENCE.png_only && [2, 6, 30, 80].contains(&after))
 }
 
 static INDIRECT_FRAMES: LazyLock<u64> = LazyLock::new(|| {
@@ -151,6 +153,14 @@ fn world_only() -> bool {
     *ONLY.get_or_init(|| std::env::var_os("VICTORY_CAPTURE_WORLD").is_some_and(|v| v == "only"))
 }
 
+// With VICTORY_CAPTURE_WORLD=only, select a PNG every 1–64 world presentations.
+static WORLD_CADENCE: LazyLock<cadence::WorldCadence> = LazyLock::new(|| {
+    cadence::WorldCadence::new(
+        world_only(),
+        std::env::var("VICTORY_CAPTURE_WORLD_INTERVAL").ok().as_deref(),
+    )
+});
+
 /// The first frame that ran 500 draws or more (`VICTORY_CAPTURE_WORLD`).
 static WORLD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
 
@@ -163,7 +173,7 @@ pub(crate) fn frame_drew(frame: u64, drawn: u64) {
         && drawn.saturating_sub(before) >= 500
         && WORLD.compare_exchange(u64::MAX, frame, Relaxed, Relaxed).is_ok()
     {
-        tracing::info!(frame, "the first frame of 500 draws or more: frames {} and {} are captured", frame + 2, frame + 6);
+        tracing::info!(frame, png_interval = WORLD_CADENCE.interval, "the first frame of 500 draws or more");
         #[cfg(feature = "diagnostics")]
         if !world_only() && let Some(folder) = folder() {
             let lines: Vec<String> = std::mem::take(&mut *RING.lock().unwrap_or_else(|e| e.into_inner())).into();
@@ -175,15 +185,13 @@ pub(crate) fn frame_drew(frame: u64, drawn: u64) {
 
 /// Whether frame `n` is saved.
 pub(crate) fn wanted(n: u64) -> bool {
-    // Before the world, with `VICTORY_CAPTURE_WORLD`: every 16th frame too
-    // (small pictures of menus, loading screens and title cards).
-    let before_world = world_on() && !world_only() && n.is_multiple_of(16) && WORLD.load(std::sync::atomic::Ordering::Relaxed) == u64::MAX;
-    // In the world: every 8th frame's picture, a timeline of the opening
-    // cutscene (its shots do not fall on the same frame numbers from run to
-    // run, so single frames cannot be compared between runs).
-    let first = WORLD.load(std::sync::atomic::Ordering::Relaxed);
-    let in_world = world_on() && first != u64::MAX && n >= first && (n - first).is_multiple_of(8);
-    folder().is_some() && (n.is_power_of_two() || listed(n) || before_world || in_world || capture_requested(n))
+    if folder().is_none() {
+        return false;
+    }
+    let first = WORLD.load(Ordering::Relaxed);
+    let loading = world_on() && !world_only() && first == u64::MAX && n.is_multiple_of(16);
+    let regular = !WORLD_CADENCE.png_only && (n.is_power_of_two() || loading);
+    regular || listed(n) || world_on() && WORLD_CADENCE.scheduled(n, first) || capture_requested(n)
 }
 
 /// Separate input planes are only recorded with the opt-in on an already requested world PNG.

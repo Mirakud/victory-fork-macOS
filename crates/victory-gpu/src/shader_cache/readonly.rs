@@ -41,6 +41,7 @@ pub(super) fn active() -> Option<&'static Pack> {
     PACK.get()
 }
 
+#[cfg(feature = "diagnostics")]
 pub(crate) fn counters() -> [u64; 4] {
     active().map_or([0; 4], |pack| {
         pack.stats.each_ref().map(|c| c.load(Ordering::Relaxed))

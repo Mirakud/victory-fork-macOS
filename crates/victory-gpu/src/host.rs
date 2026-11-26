@@ -3964,6 +3964,7 @@ fn hand_back(back: &[Declared], _trace_phases: bool,
         if _trace_phases {
             SubmissionCall::MergeHostWrites.begin();
         }
+        #[cfg_attr(not(feature = "diagnostics"), expect(clippy::unused_enumerate_index, reason = "the diagnostic timer uses the index"))]
         for (_index, ((shadow, from, to), found)) in work.iter().zip(found).enumerate() {
             #[cfg(feature = "diagnostics")]
             let mut range = timing.as_ref().map(|_| (std::time::Instant::now(), crate::shadow::WritebackCost::default()));

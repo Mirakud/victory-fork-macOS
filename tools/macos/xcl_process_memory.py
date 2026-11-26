@@ -38,7 +38,7 @@ class Rusage(ctypes.Structure):
     ]
 
 
-def native_reader():
+def native_reader(*, include_cpu=False):
     lib = ctypes.CDLL("/usr/lib/libproc.dylib")
     lib.proc_pid_rusage.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]
     lib.proc_pid_rusage.restype = ctypes.c_int
@@ -47,8 +47,11 @@ def native_reader():
         info = Rusage()
         if lib.proc_pid_rusage(pid, 0, ctypes.byref(info)) or not info.start or info.exit:
             return None
-        return {"pid": pid, "native_start_ticks": info.start, "footprint_bytes": info.footprint,
-                "rss_bytes": info.resident, "wired_bytes": info.wired}
+        sample = {"pid": pid, "native_start_ticks": info.start, "footprint_bytes": info.footprint,
+                  "rss_bytes": info.resident, "wired_bytes": info.wired}
+        if include_cpu:
+            sample["cpu_ticks"] = info.user + info.system
+        return sample
     return read
 
 

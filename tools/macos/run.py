@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import signal
 import shutil
 import subprocess
 import sys
@@ -39,6 +40,7 @@ def main():
     p.add_argument("--data", type=absolute, help="dossier de données Victory à copier pour cet essai")
     p.add_argument("--shader-pack", type=absolute, help="pack privé compatible avec le binaire utilisé")
     p.add_argument("--pipeline-manifest", type=absolute, help="liste privée de clés à préparer")
+    p.add_argument("--perf-hud", action="store_true", help="afficher les FPS mesurés et la mémoire de Victory au-dessus du jeu")
     p.add_argument("--preview", action="store_true", help="afficher la commande sans créer de dossier ni lancer Wine")
     args = p.parse_args()
     for path in (args.victory, args.title, args.shader_pack, args.pipeline_manifest):
@@ -72,12 +74,35 @@ def main():
                "--telemetry-path", str(run/"telemetry.jsonl"), "--", *child]
     if args.preview:
         print(shlex.join(command))
+        if args.perf_hud:
+            print("Encart natif demandé (FPS, mémoire de Victory, mirakud).")
         return 0
+    if args.perf_hud:
+        from victory_perf_feed import PerformanceHUD, build_hud
+        hud_binary = build_hud(TOOLS / "victory_perf_hud.swift")
     env = dict(os.environ, UNCORK_SIKARUGIR_ENGINE=str(args.engine), VICTORY_MAC_BOTTLE=str(args.bottle))
     print(run, flush=True)
     with (run / "console.txt").open("wb") as console:
-        rc = subprocess.call(command, env=env, stdout=console, stderr=subprocess.STDOUT)
-    (run / "launch.json").write_text(json.dumps({"mode": "run", "exit_code": rc, "command": command}, indent=2))
+        monitor = subprocess.Popen(command, env=env, stdout=console, stderr=subprocess.STDOUT, start_new_session=True)
+        hud = None
+
+        def stop_monitor(_signum, _frame):
+            monitor.send_signal(signal.SIGINT)
+
+        handlers = {sig: signal.signal(sig, stop_monitor) for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
+        try:
+            if args.perf_hud:
+                try:
+                    hud = PerformanceHUD(hud_binary, run, args.victory, monitor.pid)
+                except OSError as error:
+                    print(f"Encart indisponible : {error}", file=sys.stderr)
+            rc = monitor.wait()
+        finally:
+            if hud is not None:
+                hud.close()
+            for sig, handler in handlers.items():
+                signal.signal(sig, handler)
+    (run / "launch.json").write_text(json.dumps({"mode": "run", "exit_code": rc, "perf_hud": args.perf_hud, "command": command}, indent=2))
     return rc
 
 

@@ -890,6 +890,8 @@ mod tests {
     fn stale_wait_resumes_only_after_gpu_reads_and_guest_publication() {
         use super::{Flight, Late, Line};
         let flight = |texture_readback| Late::Run(Flight {
+            #[cfg(feature = "diagnostics")]
+            mesh_trace: None,
             has_texture_readbacks: texture_readback,
             number: 1,
             fence: 1,

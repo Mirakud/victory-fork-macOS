@@ -1234,10 +1234,10 @@ mod host {
             .filter(|&&(at, _)| (at..at + Duration::from_millis(700)).contains(&now))
             .map(|&(_, vk)| vk)
             .collect();
-        if let Some(key) = requested_key() {
-            if !down.contains(&key) {
-                down.push(key);
-            }
+        if let Some(key) = requested_key()
+            && !down.contains(&key)
+        {
+            down.push(key);
         }
         down
     }
@@ -1282,16 +1282,16 @@ mod host {
         let now = Instant::now();
         if now >= request.next_check {
             request.next_check = now + Duration::from_millis(250);
-            if let Ok(key) = std::fs::read_to_string(&request.path) {
-                if std::fs::remove_file(&request.path).is_ok() {
-                    let key = key.trim();
-                    let key = if key.is_empty() { "Enter" } else { key };
-                    if let Some(vk) = diagnostic_key(key) {
-                        request.held = Some((vk, now + Duration::from_millis(700)));
-                        tracing::info!(key, "diagnostic controller input");
-                    } else {
-                        tracing::warn!("unrecognized diagnostic controller key");
-                    }
+            if let Ok(key) = std::fs::read_to_string(&request.path)
+                && std::fs::remove_file(&request.path).is_ok()
+            {
+                let key = key.trim();
+                let key = if key.is_empty() { "Enter" } else { key };
+                if let Some(vk) = diagnostic_key(key) {
+                    request.held = Some((vk, now + Duration::from_millis(700)));
+                    tracing::info!(key, "diagnostic controller input");
+                } else {
+                    tracing::warn!("unrecognized diagnostic controller key");
                 }
             }
         }

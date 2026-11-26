@@ -300,7 +300,7 @@ mod tests {
         let mut held = vec![0; MAX_READ];
         let mut src = held.clone();
         for i in (0..MAX_READ).step_by(BLOCK * 2) {
-            if i / COARSE_BLOCK % 2 == 0 {
+            if (i / COARSE_BLOCK).is_multiple_of(2) {
                 src[i] = 1;
             }
         }
@@ -346,7 +346,6 @@ mod tests {
         guest[900..908].fill(0xf0); // a GPU write still pending, excluded
         assert_eq!(refresh(0..897, &guest), BLOCK);
         assert_eq!(refresh(912..size, &guest), (size - 912 - 1) % BLOCK + 1);
-        drop(refresh);
         assert!(card[900..908].iter().all(|b| *b == 41));
         assert_eq!(&card[0..897], &guest[0..897]);
         assert_eq!(&card[912..], &guest[912..]);

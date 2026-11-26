@@ -69,7 +69,7 @@ private final class MetricsView: NSView {
         }
         setAccessibilityElement(true)
         setAccessibilityRole(.group)
-        setAccessibilityLabel("mirakud, \(next.fps) FPS, CPU Victory \(next.cpu), RAM Victory \(next.ram), temps image \(next.frame), GPU par image \(next.gpu), copies par image \(next.copies)")
+        setAccessibilityLabel("mirakud, \(next.fps) FPS, CPU Victory \(next.cpu), RAM Victory \(next.ram), temps image \(next.frame), attente GPU par image \(next.gpu), copies par image \(next.copies)")
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -98,7 +98,7 @@ private final class MetricsView: NSView {
         metric("CPU Victory", values.cpu, x: 108, y: 32)
         metric("RAM Victory", values.ram, x: 204, y: 32)
         metric("Temps image", values.frame, x: 12, y: 78)
-        metric("GPU / image", values.gpu, x: 108, y: 78)
+        metric("Attente GPU", values.gpu, x: 108, y: 78)
         metric("Copies / image", values.copies, x: 204, y: 78)
     }
 }
@@ -254,7 +254,7 @@ private func selfTest(output: URL) throws {
     view.cacheDisplay(in: view.bounds, to: bitmap)
     guard let png = bitmap.representation(using: .png, properties: [:]) else { throw CocoaError(.fileWriteUnknown) }
     try png.write(to: output, options: .atomic)
-    print("mirakud | FPS \(values.fps) | CPU Victory \(values.cpu) | RAM Victory \(values.ram) | Image \(values.frame) | GPU \(values.gpu) | Copies \(values.copies) | \(bitmap.pixelsWide) × \(bitmap.pixelsHigh)")
+    print("mirakud | FPS \(values.fps) | CPU Victory \(values.cpu) | RAM Victory \(values.ram) | Image \(values.frame) | Attente GPU \(values.gpu) | Copies \(values.copies) | \(bitmap.pixelsWide) × \(bitmap.pixelsHigh)")
 }
 
 try MainActor.assumeIsolated {

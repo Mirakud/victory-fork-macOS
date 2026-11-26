@@ -11,6 +11,7 @@ Victory traduit les appels d’un titre Xbox Series vers Direct3D 12. Sur un Mac
 | Captures sur Mac M3 |
 |:---|
 | <a href="docs/macos/202903-frame-1662.png"><img src="docs/macos/202903-frame-1662.png" alt="Silhouette en contre-jour devant une lumière blanche, avec les feux de la ville en arrière-plan" width="760"></a><br>**Contre-jour dans la rue** · essai 202903, trame 1662 |
+| <a href="docs/macos/202903-frame-1712.png"><img src="docs/macos/202903-frame-1712.png" alt="Vue large du pont et du soleil orangé sur l’horizon" width="760"></a><br>**Le pont au soleil couchant** · essai 202903, trame 1712 |
 | <a href="docs/macos/frame-1864.png"><img src="docs/macos/frame-1864.png" alt="Nuages dorés dans le ciel, avec une jauge verte en haut à gauche" width="760"></a><br>**Ciel orangé au-dessus de la ville** · essai 200227, trame 1864 |
 | <a href="docs/macos/202903-frame-1670.png"><img src="docs/macos/202903-frame-1670.png" alt="Silhouettes au premier plan dans une rue éclairée en bleu" width="760"></a><br>**Éclairage bleu au carrefour** · essai 202903, trame 1670 |
 | <a href="docs/macos/frame-1840.png"><img src="docs/macos/frame-1840.png" alt="Dernières lumières de la rue sur un horizon orange" width="760"></a><br>**Changement de lumière sur l’horizon** · essai 200227, trame 1840 |
@@ -51,8 +52,13 @@ Les essais ont utilisé un M3 de 16 Gio, Sikarugir Wine 10.0 révision 6, D3DMet
 | 191652, rue visible | 19 | 14,36 s | 9,08 s | 8 614 Mio | 963 |
 | 195805, restauration de profondeur active | 6 | 6,85 s | 4,25 s | 8 662 Mio | 748 |
 | 200227, jusqu’au plan du littoral | 36 | 10,02 s | 6,64 s | 9 126,7 Mio | 836 |
+| 202903, capture continue du monde et encart actif | 45 | 11,10 s | 6,95 s | 9 129,1 Mio | 836 |
 
 Les parcours 191652 et 195805 s’arrêtent sur la surveillance du titre. En 200227, le titre déclenche un point d’arrêt volontaire `0x80000003`. Son rapport à la trame 836 indique `INSTANCE_LIST 45000/45000`, contre `30819/45000` en 191652. Le lien causal avec la saturation de cette liste reste à établir. La garde mémoire était fixée à 9 216 Mio. Le relevé en jeu de 195805 atteint **1,0 restauration de profondeur par image**. Sur le banc D3DMetal séparé, trois tests passent. Les marches R16 0, 385, 32 768 et 65 535 produisent en D24 les valeurs hexadécimales 000000, 018101, 80007F et FFFFFF ; le stencil reste à 5A sur les quatre pixels. Le second dessin préserve également les profondeurs D32 de référence. [Sources du banc](crates/victory-gpu/src/host/depth_plane_readback.rs)
+
+En 202903, le titre mesure **19 min 24 s** de fonctionnement, pour **19 min 34 s** écoulées sur le Mac. La session produit 124 PNG, dont 106 présentations consécutives du monde de la trame hôte 1647 à 1752 incluses. Le dernier plan montre un personnage de profil et des bâtiments. La prise de contrôle du personnage reste à vérifier.
+
+Le rapport de 202903 s’arrête à la trame titre 836 avec `INSTANCE_LIST 45000/45000` et 1 094 demandes de streaming. Cette fois, le processus quitte avec le code 5 après une violation d’accès `0xc0000005` sur une écriture à l’adresse nulle. Les deux arrêts sur la même trame ont ainsi des exceptions différentes. Le relevé du pool ne permet pas encore d’attribuer la cause de l’arrêt.
 
 ## Construire
 
@@ -125,4 +131,4 @@ Les dépendances Rust sont épinglées par Cargo. Figurent notamment windows-rs 
 
 ## Licence et contenu
 
-Le code Victory est distribué sous GPL-3.0-or-later. Les attributions et notices d’origine sont conservées. Les tables constantes du format BCPack gardent leur statut particulier documenté en amont. Les copies d’affichage portent la signature « mirakud » en bas à droite. Le générateur contrôle la conservation de chaque pixel hors de cette signature. Les captures illustrent exclusivement les essais de ce fork privé ; la licence du code ne s’applique pas aux images du titre. [Licence](LICENSE) · [Règles amont relatives aux ressources](docs/asset-policy.md)
+Le code Victory est distribué sous GPL-3.0-or-later. Les attributions et notices d’origine sont conservées. Les tables constantes du format BCPack gardent leur statut particulier documenté en amont. Les copies d’affichage portent la signature « mirakud » en bas à droite. Le générateur contrôle la conservation de chaque pixel hors de cette signature. Les captures illustrent exclusivement les essais de ce fork ; la licence du code ne s’applique pas aux images du titre. [Licence](LICENSE) · [Règles amont relatives aux ressources](docs/asset-policy.md)

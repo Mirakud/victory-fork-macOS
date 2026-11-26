@@ -147,7 +147,7 @@ pub fn check(path: &str, content: &[u8]) -> Vec<String> {
     let mut problems = Vec::new();
     let name = path.rsplit('/').next().unwrap_or(path);
     let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
-    // Only the reviewed PNGs shown by the private Mac fork's README.
+    // Only the reviewed PNGs shown by the Mac fork's README.
     if matches!(
         path,
         "docs/macos/rue-1.png"
@@ -167,6 +167,7 @@ pub fn check(path: &str, content: &[u8]) -> Vec<String> {
             | "docs/macos/encart-monde.png"
             | "docs/macos/202903-frame-1662.png"
             | "docs/macos/202903-frame-1670.png"
+            | "docs/macos/202903-frame-1712.png"
     ) && content.len() <= MAX_FILE_SIZE
         && content.starts_with(b"\x89PNG\r\n\x1a\n")
         && content.ends_with(b"IEND\xae\x42\x60\x82")

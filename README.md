@@ -6,6 +6,25 @@
 
 Victory traduit les appels d’un titre Xbox Series vers Direct3D 12. Sur un Mac M3 de 16 Gio, le profil Series S sous Wine Sikarugir et D3DMetal 4 affiche la rue de nuit, la voiture, le passage couvert puis le littoral. Le joueur a confirmé que la cinématique continuait quand la jauge verte est apparue. Les copies mémoire prennent encore plusieurs secondes par image et la fin de la cinématique reste à vérifier.
 
+## Essai 011924 du 27 novembre 2026
+
+Le Mac M3 de 16 Gio a enregistré **178 présentations consécutives**, de 2365 à 2542, sous Wine Sikarugir et D3DMetal 4.0 bêta 3. La ville se distingue dès la présentation 2369. Le générique se poursuit jusqu’au littoral. Les bandes noires se rétractent dans les dernières images. Le moniteur a arrêté l’essai à 9 369,3 Mio de mémoire câblée pour un plafond configuré à 9 216 Mio. La rotation inverse de la caméra et la reprise du contrôle du personnage restent à vérifier.
+
+Victory a chargé les 2 319 shaders du pack en 128 ms, puis ses 25 traductions complémentaires en 1 ms. Victory enregistre le conteneur et l’empreinte complète des traductions manquantes qui aboutissent. Après l’arrêt, le préparateur natif a ajouté 96 variantes au complément, portant son total à 121 pour le parcours suivant. Le bouton **Shaders A/B** permet de masquer ou d’isoler une paire graphique, d’en ajouter une autre puis de rétablir tous les dessins.
+
+Les 17 premiers relevés de monde à plus de 1 000 Mo de copies ont pris **5,04 s par image en médiane**, dont 3,39 s de préparation des copies. Sur le parcours précédent avec le même budget de 256 Mio pour les miroirs, ces médianes étaient de 7,27 et 5,32 s. Les scènes et les réglages de lecture ont varié entre les deux parcours. Les vues d’écriture DirectStorage sous Wine ont été réutilisées 12 874 fois sur leurs 16 384 premières demandes. [Mesures de cet essai](docs/macos/011924-mesures.json)
+
+<details>
+<summary>Voir trois captures du parcours 011924</summary>
+
+| Captures sur Mac M3 |
+|:---|
+| <a href="docs/macos/011924-frame-2410.png"><img src="docs/macos/011924-frame-2410.png" alt="Crédits devant les lumières de la ville au crépuscule" width="760"></a><br>Générique sur la ville, présentation 2410 |
+| <a href="docs/macos/011924-frame-2518.png"><img src="docs/macos/011924-frame-2518.png" alt="Personnage devant le reflet du ciel sur le littoral" width="760"></a><br>Littoral, présentation 2518 |
+| <a href="docs/macos/011924-frame-2542.png"><img src="docs/macos/011924-frame-2542.png" alt="Vue derrière le personnage avec une partie du décor encore sombre" width="760"></a><br>Dernière présentation, 2542 |
+
+</details>
+
 ## La cinématique en images
 
 | Captures sur Mac M3 |
@@ -62,7 +81,7 @@ Le rapport de 202903 s’arrête à la trame titre 836 avec `INSTANCE_LIST 45000
 
 ## Construire
 
-La source intègre le candidat Victory `c9498925311320302f59e381f51e78aabe8a55ea`. Les tests de profondeur proviennent de `95732f4` et `b6bf7c8`. La cadence de capture diagnostique provient de `4541df7`. En mode `VICTORY_CAPTURE_WORLD=only`, `VICTORY_CAPTURE_WORLD_INTERVAL=1` enregistre un PNG à chaque présentation du monde. Les intervalles de 1 à 64 sont acceptés. La recette du candidat mesuré `c949892` reste la référence de 195805 et de 200227. Le README amont conserve le détail des composants, le modèle d’exécution et les instructions du projet. [Documentation amont](README.amont.md) · [Architecture](docs/architecture.md) · [État du ray tracing](docs/fork-ray-tracing.md)
+La source de l’essai 011924 reprend le candidat Victory `6c32891`. Elle inclut la réserve étendue des pools, la réutilisation des vues DirectStorage sous Wine et le cache complémentaire de shaders. Les tests de profondeur proviennent de `95732f4` et `b6bf7c8`. La cadence de capture diagnostique provient de `4541df7`. En mode `VICTORY_CAPTURE_WORLD=only`, `VICTORY_CAPTURE_WORLD_INTERVAL=1` enregistre un PNG à chaque présentation du monde. Les intervalles de 1 à 64 sont acceptés. La recette du candidat mesuré `c949892` reste la référence de 195805 et de 200227. Le README amont conserve le détail des composants, le modèle d’exécution et les instructions du projet. [Documentation amont](README.amont.md) · [Architecture](docs/architecture.md) · [État du ray tracing](docs/fork-ray-tracing.md)
 
 Dans un terminal de développement Windows x64 avec le SDK Windows, Rust MSVC, Python 3 et le DirectX Shader Compiler de Microsoft sur le PATH, lancer les commandes suivantes. Le script compile les deux noyaux HLSL du projet en DXIL local avant que Rust n’embarque leurs octets. Le paramètre `--dxc` accepte un chemin explicite.
 
@@ -100,6 +119,8 @@ python3 tools/macos/run.py \
 ```
 
 Retirer `--preview` pour exécuter. `--data` copie les données privées d’un profil dans la nouvelle session. Les options `--shader-pack` et `--pipeline-manifest` acceptent des caches et priorités générés localement pour une version compatible. Au choix de profil du jeu, confirmer Player avec Entrée. Chaque session enregistre le journal et la télémétrie. Le moniteur arrête le groupe de processus à 9 216 Mio câblés ou dès l’erreur Metal de mémoire insuffisante. Le lanceur reprend les réglages de base de la rue, tandis que les profils, priorités spécifiques et entrées utilisées lors du développement restent propres aux essais.
+
+Pour reprendre les réglages de 011924, ajoutez `--intro-profile --data "$VICTORY_DATA"` avec votre dossier de profil. Activez `--shader-ab` pour isoler des paires graphiques dans le HUD et `--capture-shader-misses` pour enregistrer les conteneurs manquants dans le sous-dossier `shader-misses` de la session. Au lancement suivant, `--shader-overlay` accepte le fichier VSP1 préparé avec ces traductions. [Préparer et vérifier ses shaders sur Apple Silicon](tools/shaders/prepare-arm64/USAGE.md)
 
 ### Afficher les performances en jeu
 

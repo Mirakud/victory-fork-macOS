@@ -202,6 +202,9 @@ pub(crate) fn slow_asks() -> [u64; 3] {
 
 /// The submission's refreshes are done: `writes` asks the kernel again.
 pub(crate) fn ask_ahead_done() {
+    if !fault_tracking() {
+        return;
+    }
     let mut j = JOURNAL.lock().unwrap_or_else(|e| e.into_inner());
     if !j.kept {
         j.ahead.clear();
@@ -269,6 +272,9 @@ pub(crate) fn ask_once(ranges: &[(usize, usize)]) {
 /// The submission's one asking stands no longer: its refreshes are done,
 /// or title memory was written in a way the journal was not told.
 pub(crate) fn ask_once_end() {
+    if !fault_tracking() {
+        return;
+    }
     let mut j = JOURNAL.lock().unwrap_or_else(|e| e.into_inner());
     if j.kept {
         j.kept = false;
@@ -280,6 +286,9 @@ pub(crate) fn ask_once_end() {
 /// stands (the title's buffer copies, done at submission): its pages count
 /// as written after that asking, so the refreshes that follow copy them.
 pub(crate) fn wrote(at: usize, len: usize) {
+    if !fault_tracking() {
+        return;
+    }
     let mut j = JOURNAL.lock().unwrap_or_else(|e| e.into_inner());
     if !j.kept || len == 0 {
         return;
@@ -824,7 +833,9 @@ fn open_here(g: &mut Guards, start: usize, end: usize) -> bool {
 /// reads into its own memory.
 pub fn writing(at: usize, len: usize) {
     // The length is the title's (`fread`'s size times count, saturated).
-    open(&mut guards(), at, at.saturating_add(len));
+    if fault_tracking() {
+        open(&mut guards(), at, at.saturating_add(len));
+    }
     // A placed texture there changes with no descriptor written.
     crate::descriptor::host::remapped(at, len);
 }
@@ -891,7 +902,7 @@ pub fn title_memory_written(at: usize, len: usize, pages: bool) {
             return;
         }
     }
-    {
+    if fault_tracking() {
         let mut g = guards();
         let guarded = g.protected.range(at / BLOCK..end.div_ceil(BLOCK)).count() as u64;
         if pages {
@@ -911,7 +922,7 @@ pub fn title_memory_written(at: usize, len: usize, pages: bool) {
 /// again — and are, the pages noted written, which also has the next check
 /// guard the new view (`protect`).
 pub(crate) fn views_mapped(section: usize, offset: u64, len: usize) {
-    if !view_guard() {
+    if !fault_tracking() || !view_guard() {
         return;
     }
     let ranges = crate::inplace::views_of_section(section, offset, len);
@@ -987,6 +998,9 @@ pub fn title_memory_remapped(at: usize, len: usize) {
     crate::inplace::views_gone(at, len);
     // And nothing stays in place over it.
     crate::inplace::title_memory_freeing(at, len);
+    if !fault_tracking() {
+        return;
+    }
     let mut g = guards();
     let range = at / BLOCK..at.saturating_add(len).div_ceil(BLOCK);
     let absent: Vec<usize> = g.absent.range(range.clone()).copied().collect();

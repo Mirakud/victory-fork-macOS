@@ -40,7 +40,7 @@ fn host_gpu_failed(what: &str) -> ! {
 pub fn warm_shader(container: &[u8]) -> Result<bool, String> {
     #[cfg(windows)]
     {
-        victory_gpu::shader_cache::warm(container)
+        victory_gpu::shader_cache::readonly::warm(container)
     }
     #[cfg(not(windows))]
     {

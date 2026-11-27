@@ -1,0 +1,193 @@
+{
+  "run": "011924",
+  "tested": {
+    "host": "Apple M3, 16 GiB",
+    "graphics": "D3DMetal 4.0 beta 3",
+    "compatibility_runtime": "Sikarugir Wine 10.0 revision 6",
+    "console_profile": "Series S",
+    "lod_scale": 0.45,
+    "small_cull_threshold": 2.0
+  },
+  "start_local": "2026-11-27T01:19:24+01:00",
+  "end_local": "2026-11-27T01:39:40+01:00",
+  "elapsed_seconds": 1216,
+  "monitor_exit_code": 1,
+  "termination": {
+    "reason": {
+      "fr": "La garde de mémoire câblée de macOS a arrêté le processus.",
+      "en": "The macOS wired-memory guard stopped the process."
+    },
+    "wired_limit_MiB": 9216,
+    "wired_peak_MiB": 9369.3,
+    "wired_peak_sample_utc": "2026-11-27T00:39:39.181+00:00",
+    "max_system_used_pct": 84,
+    "fatal_guest_exception_in_console": false,
+    "native_crash_report_present": false
+  },
+  "captures": {
+    "count": 178,
+    "numbering": {
+      "fr": "Numéros de présentation hôte des PNG.",
+      "en": "Host presentation numbers of the PNG files."
+    },
+    "first": 2365,
+    "last": 2542,
+    "step": 1,
+    "missing_between_first_last": 0,
+    "first_capture_utc": "2026-11-27T00:21:14.708786Z",
+    "last_capture_utc": "2026-11-27T00:39:28.109827Z",
+    "first_discernible_world_present": 2369,
+    "last_native_title_frame": null,
+    "note": {
+      "fr": "Les quatre premières captures sont noires ou uniformes. Aucun rapport du titre ne donne sa dernière trame native.",
+      "en": "The first four captures are black or flat. No title report gives its final native frame."
+    }
+  },
+  "srl_last_observation": {
+    "state": 4,
+    "metadata_entries": 61,
+    "indexed_entries": 51,
+    "eligible": 51,
+    "ready": 51,
+    "pending": 0
+  },
+  "pools": {
+    "car_generators": {
+      "capacity": 45000,
+      "max_occupied_observed": 26372,
+      "last_occupied": 26372,
+      "last_return_counter": 27822,
+      "max_return_counter_observed": 27822
+    },
+    "building": {
+      "capacity": 45000,
+      "max_occupied_observed": 23589,
+      "last_occupied": 16807,
+      "last_return_counter": 13530,
+      "max_return_counter_observed": 13530
+    },
+    "object": {
+      "capacity": 27500,
+      "max_occupied_observed": 19700,
+      "last_occupied": 14274,
+      "last_return_counter": 10188,
+      "max_return_counter_observed": 10188
+    },
+    "entitybatch": {
+      "capacity": 45000,
+      "max_occupied_observed": 45000,
+      "last_occupied": 16242,
+      "last_return_counter": 35514,
+      "max_return_counter_observed": 35514
+    }
+  },
+  "pool_definition": {
+    "fr": "Occupation maximale échantillonnée. Le compteur de retours augmente à chaque entrée rendue au pool.",
+    "en": "Maximum sampled occupancy. The return counter advances when an entry goes back to the pool."
+  },
+  "shaders": {
+    "primary_VSP_at_launch": {
+      "entries": 2319,
+      "bytes": 137150243,
+      "preload_ms": 128
+    },
+    "ARM64_overlay_at_launch": {
+      "entries": 25,
+      "bytes": 853229,
+      "preload_ms": 1
+    },
+    "last_runtime_counters": {
+      "readonly_shader_hits": 2205,
+      "readonly_overlay_hits": 6,
+      "readonly_shader_misses": 97,
+      "readonly_lookup_us": 232489,
+      "readonly_fallback_us": 46733495,
+      "pipelines_pending": 7,
+      "pipelines_driver_attempts": 1865,
+      "pipelines_driver_successes": 1863,
+      "pipelines_driver_failures": 0
+    },
+    "captured_translations_by_stage": {
+      "Cs": 26,
+      "Ms": 30,
+      "Ps": 34,
+      "Vs": 6
+    },
+    "captured_unique_successful_translations": 96,
+    "reused_deterministic_refusal": 1,
+    "overlay_after_shutdown": {
+      "entries": 121,
+      "added": 96,
+      "rejected": 0,
+      "over_limit": 0,
+      "preparer_exit_code": 0
+    },
+    "note": {
+      "fr": "Les hits de l’overlay sont inclus dans le total. Les 121 entrées sont le résultat de préparation après fermeture. Les microsecondes de fallback sont cumulées sur les traductions.",
+      "en": "Overlay hits are included in total hits. The 121 entries were available after shutdown. Fallback microseconds are cumulative translation time."
+    }
+  },
+  "agx_world": {
+    "first_host_present": 2369,
+    "last_host_present": 2542,
+    "first_sample_utc": "2026-11-27T00:21:33.646643+00:00",
+    "last_sample_utc": "2026-11-27T00:39:39.413127+00:00",
+    "observations": 702,
+    "device": {
+      "median_pct": 28.5,
+      "max_pct": 62
+    },
+    "renderer": {
+      "median_pct": 25.5,
+      "max_pct": 61
+    },
+    "tiler": {
+      "median_pct": 26.0,
+      "max_pct": 61
+    },
+    "scope": {
+      "fr": "Tous les prélèvements matériels AGX depuis la première image du monde visuellement identifiable. Mesures de l’ensemble du GPU macOS, autres processus inclus, pondérées par prélèvement.",
+      "en": "All AGX samples from the first visually identifiable world image. Whole-device macOS GPU readings include other processes and are weighted by sample."
+    }
+  },
+  "heavy_report_comparison": {
+    "selection": {
+      "fr": "Par essai, 17 premiers rapports de performances horodatés depuis le premier PNG de la série du monde, avec strictement plus de 1 000 MB de copies selon le rapport. Médianes des valeurs par trame publiées par le moteur. Les séquences et les volumes de travail peuvent différer.",
+      "en": "For each run, take the first 17 performance reports dated at or after the first PNG of the world capture series with more than 1,000 MB of reported copies. Medians use the engine’s per-frame values. Sequences and workloads can differ."
+    },
+    "010315": {
+      "start_capture_present": 2363,
+      "start_capture_utc": "2026-11-27T00:05:43.010988Z",
+      "first_report_utc": "2026-11-27T00:05:43.014412Z",
+      "last_report_utc": "2026-11-27T00:07:53.509636Z",
+      "count": 17,
+      "median": {
+        "frame_ms": 7269.7,
+        "preparation_ms": 5992.1,
+        "host_copy_ms": 5322.6,
+        "reported_copy_MB": 12782.1,
+        "texture_ms": 435.4,
+        "gpu_phase_ms": 1192.2,
+        "copyback_ms": 232.6,
+        "draws_per_frame": 2997.0
+      }
+    },
+    "011924": {
+      "start_capture_present": 2365,
+      "start_capture_utc": "2026-11-27T00:21:14.708786Z",
+      "first_report_utc": "2026-11-27T00:21:14.711265Z",
+      "last_report_utc": "2026-11-27T00:23:09.690226Z",
+      "count": 17,
+      "median": {
+        "frame_ms": 5035.2,
+        "preparation_ms": 3812.3,
+        "host_copy_ms": 3388.6,
+        "reported_copy_MB": 12954.1,
+        "texture_ms": 262.8,
+        "gpu_phase_ms": 1048.5,
+        "copyback_ms": 161.5,
+        "draws_per_frame": 3585.0
+      }
+    }
+  }
+}

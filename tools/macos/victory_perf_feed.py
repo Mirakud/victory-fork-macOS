@@ -63,7 +63,7 @@ def find_game(candidate, monitor_pid):
 
 
 class PerformanceHUD:
-    def __init__(self, binary, run, candidate, monitor_pid):
+    def __init__(self, binary, run, candidate, monitor_pid, shader_ab=False):
         self.path = run / "hud.json"
         self.run = run
         self.candidate = candidate
@@ -76,7 +76,10 @@ class PerformanceHUD:
         write_state(self.path, {"updated": time.time()})
         self.log = (run / "hud.log").open("wb")
         try:
-            self.panel = subprocess.Popen([str(binary), str(self.path)], stdin=subprocess.DEVNULL,
+            command = [str(binary), str(self.path)]
+            if shader_ab:
+                command.append("--shader-ab")
+            self.panel = subprocess.Popen(command, stdin=subprocess.DEVNULL,
                                           stdout=self.log, stderr=subprocess.STDOUT)
         except OSError:
             self.log.close()

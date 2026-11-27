@@ -1,0 +1,29 @@
+[package]
+name = "victory-prepare-shaders"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+publish = false
+
+[workspace]
+
+[[bin]]
+name = "victory-prepare-shaders"
+path = "main.rs"
+required-features = ["diagnostics"]
+
+[features]
+# Counters in the shared pack reader prove that verification never used fallback.
+default = ["diagnostics", "reader-diagnostics"]
+diagnostics = []
+reader-diagnostics = ["victory-shader/diagnostics"]
+
+[dependencies]
+anyhow = "1.0.104"
+blake3 = "1.8.7"
+tempfile = "3.27.0"
+tracing = "0.1.44"
+victory-core = { path = "../../../crates/victory-core" }
+victory-game = { path = "../../../crates/victory-game" }
+victory-pipeline = { path = "../../../crates/victory-pipeline" }
+victory-shader = { path = "../../../crates/victory-shader", features = ["host"] }

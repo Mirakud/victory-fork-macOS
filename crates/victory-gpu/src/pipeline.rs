@@ -349,6 +349,8 @@ struct Pipeline {
     shaders: Vec<Arc<Shader>>,
     /// Whether a list has bound it yet (its shaders are logged then).
     bound: std::sync::atomic::AtomicBool,
+    #[cfg(all(windows, feature = "diagnostics"))]
+    graphics_id: OnceLock<Option<crate::shader_toggle::GraphicsId>>,
     /// What its host pipeline is made from, and the host pipeline once made
     /// (by a worker: the title may release the pipeline meanwhile).
     #[cfg(windows)]
@@ -358,6 +360,18 @@ struct Pipeline {
     builder: bool,
 }
 const _: () = assert!(offset_of!(Pipeline, packet) == 0x10);
+
+/// Stable key of the original title PSO and its mesh/vertex and pixel programs.
+#[cfg(all(windows, feature = "diagnostics"))]
+pub(crate) fn graphics_id(this: This) -> Option<crate::shader_toggle::GraphicsId> {
+    if this.is_null() { return None; }
+    let p = pipeline(this);
+    *p.graphics_id.get_or_init(|| {
+        if p.shaders.iter().any(|s| s.stage == "compute") { return None; }
+        let shader = |stage| p.shaders.iter().find(|s| s.stage == stage).map(|s| s.hash.as_str());
+        crate::shader_toggle::GraphicsId::new(&p.host.key, shader("mesh").or_else(|| shader("vertex")), shader("pixel"))
+    })
+}
 
 /// Stage names, in description order.
 const GRAPHICS_STAGES: [&str; 5] = ["vertex", "pixel", "domain", "hull", "geometry"];
@@ -600,6 +614,8 @@ fn hand_out(
         builder,
         shaders,
         bound: std::sync::atomic::AtomicBool::new(false),
+        #[cfg(all(windows, feature = "diagnostics"))]
+        graphics_id: OnceLock::new(),
     });
     object::hand_out(PIPELINE, pipeline, iid, &PIPELINE_IIDS, out)
 }

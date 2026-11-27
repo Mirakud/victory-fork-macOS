@@ -1,7 +1,8 @@
 //! Reader strategy hints, never page contents or a cached VM map.
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::ops::Range;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 pub(super) const LARGE: usize = 64 << 10;
 const PAGE: usize = 4 << 10;
@@ -194,10 +195,250 @@ pub(super) fn walk(
     (readable, skipped)
 }
 
+// Only the bounds of earlier successful reads are hints. Each such span must
+// pass a fresh kernel read before its bytes can be used. Everything else,
+// including every former hole, is discovered again from the current map.
+const MAX_RUNS: usize = 64;
+// Attempts to read learned spans, successes, bytes read that way, VM map queries.
+static GROUPED: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+
+pub(super) fn take_grouped_counts() -> [u64; 4] {
+    GROUPED.each_ref().map(|n| n.swap(0, Ordering::Relaxed))
+}
+
+type SavedRuns = (Key, Arc<[Range<usize>]>);
+struct ReadRuns([Mutex<Option<SavedRuns>>; 256]);
+
+impl ReadRuns {
+    const fn new() -> Self {
+        Self([const { Mutex::new(None) }; 256])
+    }
+
+    fn bucket(&self, key: Key) -> &Mutex<Option<SavedRuns>> {
+        let mut hash = DefaultHasher::new();
+        key.hash(&mut hash);
+        &self.0[hash.finish() as usize % self.0.len()]
+    }
+
+    fn walk(
+        &self,
+        address: usize,
+        len: usize,
+        mut query: impl FnMut(usize) -> Option<(usize, bool)>,
+        mut read: impl FnMut(usize, usize) -> bool,
+        mut zero: impl FnMut(usize, usize),
+    ) -> (bool, u64) {
+        let Some(end) = address.checked_add(len) else {
+            return walk(address, len, true, query, read, zero);
+        };
+        let key = (address, len);
+        let bucket = self.bucket(key);
+        let previous = bucket
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .filter(|(k, _)| *k == key)
+            .map(|(_, runs)| Arc::clone(runs));
+        let mut runs = Vec::<Range<usize>>::new();
+        let mut checked_read = |at, n| {
+            let ok = read(at, n);
+            if ok && runs.len() <= MAX_RUNS {
+                if let Some(last) = runs.last_mut()
+                    && last.end == at
+                {
+                    last.end += n;
+                } else {
+                    runs.push(at..at + n);
+                }
+            }
+            ok
+        };
+        let (mut attempts, mut successes, mut bytes, mut queries) = (0, 0, 0, 0);
+        let mut current_map = |at| {
+            queries += 1;
+            query(at)
+        };
+        let mut complete = true;
+        let mut skipped = 0;
+        let mut visit = |start, end, bulk| {
+            if start == end {
+                return;
+            }
+            let size = end - start;
+            if bulk {
+                attempts += 1;
+                if checked_read(start, size) {
+                    successes += 1;
+                    bytes += size as u64;
+                    return;
+                }
+            }
+            let (ok, count) = walk(
+                start,
+                size,
+                true,
+                &mut current_map,
+                &mut checked_read,
+                &mut zero,
+            );
+            complete &= ok;
+            skipped += count;
+        };
+        let mut cursor = address;
+        for run in previous.as_deref().unwrap_or_default() {
+            visit(cursor, run.start, false);
+            visit(run.start, run.end, true);
+            cursor = run.end;
+        }
+        visit(cursor, end, false);
+        for (counter, n) in GROUPED.iter().zip([attempts, successes, bytes, queries]) {
+            counter.fetch_add(n, Ordering::Relaxed);
+        }
+        let keep = !complete && !runs.is_empty() && runs.len() <= MAX_RUNS;
+        if keep && previous.as_deref() != Some(runs.as_slice()) {
+            *bucket.lock().unwrap_or_else(|e| e.into_inner()) = Some((key, runs.into()));
+        } else if !keep && previous.is_some() {
+            let mut entry = bucket.lock().unwrap_or_else(|e| e.into_inner());
+            if entry.as_ref().is_some_and(|(k, _)| *k == key) {
+                *entry = None;
+            }
+        }
+        (complete, skipped)
+    }
+}
+
+pub(super) fn walk_source(
+    address: usize,
+    len: usize,
+    dedup: bool,
+    query: impl FnMut(usize) -> Option<(usize, bool)>,
+    read: impl FnMut(usize, usize) -> bool,
+    zero: impl FnMut(usize, usize),
+) -> (bool, u64) {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    static RUNS: ReadRuns = ReadRuns::new();
+    if dedup
+        && len >= 1 << 20
+        && *ENABLED
+            .get_or_init(|| std::env::var_os("VICTORY_SPARSE_READ_RUNS").is_some_and(|v| v == "1"))
+    {
+        RUNS.walk(address, len, query, read, zero)
+    } else {
+        walk(address, len, dedup, query, read, zero)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::cell::RefCell;
+
+    // Distinct views may be adjacent and readable. A failed bulk read may
+    // still leave prefix bytes in the caller's buffer.
+    fn exercise(cache: &ReadRuns, pages: &[bool], value: u8) -> (usize, usize) {
+        let n = pages.len() * PAGE;
+        let dest = RefCell::new(vec![0xa5; n]);
+        let (mut reads, mut queries) = (0, 0);
+        let (all, _) = cache.walk(
+            0,
+            n,
+            |at| {
+                queries += 1;
+                Some((PAGE - at % PAGE, pages[at / PAGE]))
+            },
+            |at, n| {
+                reads += 1;
+                let mut bytes = dest.borrow_mut();
+                for i in at..at + n {
+                    if !pages[i / PAGE] {
+                        return false;
+                    }
+                    bytes[i] = value;
+                }
+                true
+            },
+            |at, n| dest.borrow_mut()[at..at + n].fill(0),
+        );
+        assert_eq!(all, pages.iter().all(|&readable| readable));
+        for (page, bytes) in pages.iter().zip(dest.borrow().as_chunks::<PAGE>().0) {
+            assert!(bytes.iter().all(|&b| b == if *page { value } else { 0 }));
+        }
+        (queries, reads)
+    }
+
+    #[test]
+    fn saved_runs_recheck_holes_splits_and_remapped_values() {
+        let cache = ReadRuns::new();
+        let mut pages = [true; 16];
+        pages[7] = false;
+        assert_eq!(exercise(&cache, &pages, 11), (16, 15));
+        assert_eq!(exercise(&cache, &pages, 22), (1, 2));
+        pages[7] = true;
+        pages[13] = false;
+        exercise(&cache, &pages, 33);
+        assert_eq!(exercise(&cache, &pages, 44), (1, 2));
+        pages.fill(true);
+        exercise(&cache, &pages, 55);
+        assert!(cache.bucket((0, 16 * PAGE)).lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn fragmented_ranges_and_concurrent_readers_get_their_own_bytes() {
+        let cache = ReadRuns::new();
+        let pages = (0..MAX_RUNS * 2 + 1)
+            .map(|i| i % 2 == 0)
+            .collect::<Vec<_>>();
+        exercise(&cache, &pages, 1);
+        assert!(
+            cache
+                .bucket((0, pages.len() * PAGE))
+                .lock()
+                .unwrap()
+                .is_none()
+        );
+        std::thread::scope(|scope| {
+            for thread in 0..3 {
+                let cache = &cache;
+                scope.spawn(move || {
+                    for turn in 0..12 {
+                        let mut pages = [true; 16];
+                        pages[(turn + thread) % 16] = false;
+                        exercise(cache, &pages, 1 + (turn + thread) as u8);
+                    }
+                });
+            }
+        });
+    }
+
+    #[test]
+    fn a_mapping_lost_between_query_and_read_is_recovered() {
+        let cache = ReadRuns::new();
+        let available = std::cell::Cell::new(true);
+        let dest = RefCell::new(vec![0xff; 3 * PAGE]);
+        let (all, _) = cache.walk(
+            0,
+            3 * PAGE,
+            |at| {
+                if at == PAGE {
+                    available.set(false);
+                }
+                Some((PAGE, true))
+            },
+            |at, len| {
+                if at / PAGE == 1 && !available.get() {
+                    return false;
+                }
+                dest.borrow_mut()[at..at + len].fill(0x55);
+                true
+            },
+            |at, n| dest.borrow_mut()[at..at + n].fill(0),
+        );
+        assert!(!all);
+        let dest = dest.into_inner();
+        assert!(dest[..PAGE].iter().all(|&b| b == 0x55));
+        assert!(dest[PAGE..2 * PAGE].iter().all(|&b| b == 0));
+        assert!(dest[2 * PAGE..].iter().all(|&b| b == 0x55));
+    }
 
     #[test]
     fn a_failed_page_fragment_is_zeroed_without_rereading_any_byte() {

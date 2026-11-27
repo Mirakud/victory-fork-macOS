@@ -1,4 +1,4 @@
-//! One immutable, preloaded snapshot of selected VSH1 translations.
+//! Immutable, preloaded VSH1 translations: a primary pack and an optional overlay.
 //! VSP1: magic (8 bytes), ordinary cache build key (32), count (LE u32),
 //! repeated full BLAKE3 of guest bytes (32), size (LE u32), VSH1 bytes,
 //! followed by BLAKE3 of everything preceding the trailer.
@@ -12,10 +12,13 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 use victory_shader::emit::HostShader;
 
+#[path = "refusal.rs"]
+mod refusal;
+
 const MAGIC: &[u8; 8] = b"VSP1\r\n\x1a\n";
 const MAX_BYTES: usize = 256 << 20;
 const MAX_ENTRIES: usize = 8192;
-static PACK: OnceLock<Pack> = OnceLock::new();
+static PACKS: OnceLock<Packs> = OnceLock::new();
 
 pub fn preload(path: &Path) {
     let began = Instant::now();
@@ -29,7 +32,8 @@ pub fn preload(path: &Path) {
             tracing::info!(target: "victory_gpu::memory_watch", entries = pack.index.len(),
                 bytes = pack.data.len(), build = %blake3::Hash::from(pack.build),
                 preload_ms = began.elapsed().as_millis() as u64, "loaded read-only shader pack");
-            let _ = PACK.set(pack);
+            let overlay = std::env::var_os("VICTORY_READONLY_SHADER_OVERLAY");
+            let _ = PACKS.set(Packs::new(pack, overlay.as_deref().map(Path::new)));
         }
         Err(error) => {
             tracing::warn!(%error, path = %path.display(), "unavailable read-only shader pack")
@@ -37,23 +41,53 @@ pub fn preload(path: &Path) {
     }
 }
 
-pub(super) fn active() -> Option<&'static Pack> {
-    PACK.get()
+pub(super) fn active() -> Option<&'static Packs> {
+    PACKS.get()
+}
+
+/// Optional offline preparation with the same executable and host settings
+/// as the run. The ordinary mutable cache reports conversion failures with
+/// this context; keep its result and only learn the verified emitter error.
+pub fn warm(container: &[u8]) -> Result<bool, String> {
+    const CONVERSION: &str = "converter shader.dxil v1: ";
+    let Some(cache) = refusal::Cache::configured() else {
+        return super::warm(container);
+    };
+    if super::CACHE.get().is_none() {
+        return super::warm(container);
+    }
+    let build = super::build();
+    let guest = *blake3::hash(container).as_bytes();
+    if let Some(error) = cache.lookup(build, guest) {
+        return Err(format!("{CONVERSION}{error}"));
+    }
+    let began = Instant::now();
+    let result = super::warm(container);
+    if let Err(error) = &result && let Some(emitter) = error.strip_prefix(CONVERSION) {
+        cache.observe(build, guest, emitter, began.elapsed().as_micros() as u64);
+    }
+    result
 }
 
 #[cfg(feature = "diagnostics")]
-pub(crate) fn counters() -> [u64; 4] {
-    active().map_or([0; 4], |pack| {
+pub(crate) fn counters() -> [u64; 5] {
+    active().map_or([0; 5], |pack| {
         pack.stats.each_ref().map(|c| c.load(Ordering::Relaxed))
     })
 }
 
-pub(super) struct Pack {
+struct Pack {
     data: Vec<u8>,
     build: [u8; 32],
     index: HashMap<[u8; 32], Range<usize>>,
+}
+
+pub(super) struct Packs {
+    primary: Pack,
+    overlay: Option<Pack>,
     warned_mismatch: AtomicBool,
-    stats: [AtomicU64; 4],
+    // Total hits, misses, lookup time, fallback time, hits from the overlay.
+    stats: [AtomicU64; 5],
 }
 
 fn invalid(msg: &'static str) -> io::Error {
@@ -113,13 +147,40 @@ impl Pack {
         if offset != body.len() {
             return Err(invalid("unexpected trailing shader records"));
         }
-        Ok(Self {
-            data,
-            build,
-            index,
-            warned_mismatch: AtomicBool::new(false),
-            stats: Default::default(),
-        })
+        Ok(Self { data, build, index })
+    }
+
+    fn shader(&self, guest: &[u8; 32]) -> Option<HostShader> {
+        let range = self.index.get(guest)?;
+        super::decode(&self.data[range.clone()])
+    }
+}
+
+impl Packs {
+    fn new(primary: Pack, overlay: Option<&Path>) -> Self {
+        let overlay = overlay.and_then(|path| {
+            let began = Instant::now();
+            match File::open(path).and_then(Pack::read) {
+                Ok(pack) if pack.build == primary.build => {
+                    tracing::info!(target: "victory_gpu::memory_watch", entries = pack.index.len(),
+                        bytes = pack.data.len(), build = %blake3::Hash::from(pack.build),
+                        preload_ms = began.elapsed().as_millis() as u64, "loaded read-only shader overlay");
+                    Some(pack)
+                }
+                Ok(pack) => {
+                    tracing::warn!(target: "victory_gpu::memory_watch", path = %path.display(),
+                        packed = %blake3::Hash::from(pack.build), primary = %blake3::Hash::from(primary.build),
+                        "read-only shader overlay build mismatch");
+                    None
+                }
+                Err(error) => {
+                    tracing::warn!(target: "victory_gpu::memory_watch", %error, path = %path.display(),
+                        "unavailable read-only shader overlay");
+                    None
+                }
+            }
+        });
+        Self { primary, overlay, warned_mismatch: AtomicBool::new(false), stats: Default::default() }
     }
 
     pub(super) fn translate(
@@ -130,13 +191,17 @@ impl Pack {
     ) -> Result<HostShader, String> {
         let began = Instant::now();
         let build = build();
-        let found = if self.build == build {
-            self.index
-                .get(blake3::hash(guest).as_bytes())
-                .and_then(|r| super::decode(&self.data[r.clone()]))
+        let hash = blake3::hash(guest);
+        let matching = self.primary.build == build;
+        let found = if matching {
+            self.primary.shader(hash.as_bytes()).or_else(|| {
+                let shader = self.overlay.as_ref()?.shader(hash.as_bytes())?;
+                self.stats[4].fetch_add(1, Ordering::Relaxed);
+                Some(shader)
+            })
         } else {
             if !self.warned_mismatch.swap(true, Ordering::Relaxed) {
-                tracing::warn!(target: "victory_gpu::memory_watch", packed = %blake3::Hash::from(self.build),
+                tracing::warn!(target: "victory_gpu::memory_watch", packed = %blake3::Hash::from(self.primary.build),
                     actual = %blake3::Hash::from(build), "read-only shader pack build mismatch");
             }
             None
@@ -147,10 +212,74 @@ impl Pack {
             return Ok(shader);
         }
         self.stats[1].fetch_add(1, Ordering::Relaxed);
+        let refusals = matching.then(refusal::Cache::configured).flatten();
+        if let Some(error) = refusals.and_then(|cache| cache.lookup(build, *hash.as_bytes())) {
+            return Err(error);
+        }
         let began = Instant::now();
         let result = fallback(guest);
-        self.stats[3].fetch_add(began.elapsed().as_micros() as u64, Ordering::Relaxed);
+        let fallback_us = began.elapsed().as_micros() as u64;
+        self.stats[3].fetch_add(fallback_us, Ordering::Relaxed);
+        if matching && let Ok(shader) = &result {
+            record_missing_input(hash, guest, shader.stage, fallback_us);
+        } else if let (Some(cache), Err(error)) = (refusals, &result) {
+            cache.observe(build, *hash.as_bytes(), error, fallback_us);
+        }
         result
+    }
+}
+
+// Save successful misses for the native offline translator. The rendering
+// thread never waits on disk or on the recorder when its queue is full.
+fn record_missing_input(hash: blake3::Hash, guest: &[u8], stage: victory_shader::HwStage, fallback_us: u64) {
+    use std::collections::HashSet;
+    use std::sync::mpsc::{SyncSender, sync_channel};
+
+    struct Captured {
+        hash: blake3::Hash,
+        bytes: Vec<u8>,
+        stage: victory_shader::HwStage,
+        fallback_us: u64,
+    }
+
+    static RECORDER: OnceLock<Option<SyncSender<Captured>>> = OnceLock::new();
+    let sender = RECORDER.get_or_init(|| {
+        let directory = std::path::PathBuf::from(std::env::var_os("VICTORY_SHADER_MISSES_DIR")?);
+        let (sender, receiver) = sync_channel::<Captured>(8);
+        std::thread::Builder::new()
+            .name("shader-inputs".into())
+            .spawn(move || {
+                let mut seen = HashSet::new();
+                let mut written = 0;
+                for capture in receiver {
+                    let bytes = &capture.bytes;
+                    if seen.len() >= 512 || written + bytes.len() > (64 << 20) {
+                        continue;
+                    }
+                    let hash = capture.hash;
+                    if seen.contains(&hash) {
+                        continue;
+                    }
+                    let target = directory.join(hash.to_hex().as_str());
+                    let temporary = target.with_extension("partial");
+                    if let Err(error) = std::fs::write(&temporary, bytes)
+                        .and_then(|()| std::fs::rename(&temporary, &target))
+                    {
+                        tracing::warn!(%error, "could not save shader input");
+                        continue;
+                    }
+                    tracing::info!(target: "victory_gpu::memory_watch", guest = %hash,
+                        stage = ?capture.stage, fallback_us = capture.fallback_us,
+                        bytes = bytes.len(), "captured shader translation");
+                    written += bytes.len();
+                    seen.insert(hash);
+                }
+            })
+            .ok()?;
+        Some(sender)
+    });
+    if let Some(sender) = sender && guest.len() <= 4 << 20 {
+        let _ = sender.try_send(Captured { hash, bytes: guest.to_vec(), stage, fallback_us });
     }
 }
 
@@ -187,7 +316,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("shaders.vsp");
         std::fs::write(&path, file(&[(guest, &record())])).unwrap();
-        let pack = Pack::read(File::open(&path).unwrap()).unwrap();
+        let pack = Packs::new(Pack::read(File::open(&path).unwrap()).unwrap(), None);
         std::fs::remove_file(path).unwrap();
         let result = pack.translate(|| [1; 32], guest, |_| panic!("hit must not translate"));
         assert_eq!(result.unwrap().dxil, b"abc");
@@ -207,6 +336,54 @@ mod tests {
     }
 
     #[test]
+    fn overlay_supplies_only_missing_translations_and_counts_one_lookup() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("overlay.vsp");
+        let primary_record = record();
+        let mut overlay_record = record();
+        overlay_record[12..15].copy_from_slice(b"xyz");
+        std::fs::write(&path, file(&[(b"shared", &overlay_record), (b"added", &overlay_record)])).unwrap();
+        let primary = Pack::parse(file(&[(b"shared", &primary_record)])).unwrap();
+        let packs = Packs::new(primary, Some(&path));
+        std::fs::remove_file(&path).unwrap();
+
+        let hit = |guest: &[u8]| packs.translate(|| [1; 32], guest, |_| panic!("cached shader translated"));
+        assert_eq!(hit(b"shared").unwrap().dxil, b"abc");
+        assert_eq!(hit(b"added").unwrap().dxil, b"xyz");
+        let fallback = |_: &[u8]| Err::<HostShader, _>("translated".into());
+        assert_eq!(packs.translate(|| [1; 32], b"missing", fallback).unwrap_err(), "translated");
+        assert_eq!(packs.translate(|| [2; 32], b"added", fallback).unwrap_err(), "translated");
+        assert_eq!(packs.stats[0].load(Ordering::Relaxed), 2);
+        assert_eq!(packs.stats[1].load(Ordering::Relaxed), 2);
+        assert_eq!(packs.stats[4].load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn missing_damaged_or_foreign_overlay_keeps_the_primary_and_fallback() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("overlay.vsp");
+        let blob = record();
+        let mut damaged = file(&[(b"added", &blob)]);
+        damaged[44] ^= 1;
+        let mut foreign = file(&[(b"added", &blob)]);
+        foreign[8] ^= 1;
+        let end = foreign.len() - 32;
+        let checksum = blake3::hash(&foreign[..end]);
+        foreign[end..].copy_from_slice(checksum.as_bytes());
+        for file_contents in [None, Some(damaged), Some(foreign)] {
+            if let Some(bytes) = file_contents {
+                std::fs::write(&path, bytes).unwrap();
+            }
+            let primary = Pack::parse(file(&[(b"shared", &blob)])).unwrap();
+            let packs = Packs::new(primary, Some(&path));
+            assert!(packs.overlay.is_none());
+            assert_eq!(packs.translate(|| [1; 32], b"shared", |_| panic!()).unwrap().dxil, b"abc");
+            assert_eq!(packs.translate(|| [1; 32], b"added", |_| Err("translated".into())).unwrap_err(), "translated");
+            assert_eq!(packs.stats[4].load(Ordering::Relaxed), 0);
+        }
+    }
+
+    #[test]
     fn damaged_or_ambiguous_packs_are_rejected() {
         let record = record();
         let mut damaged = file(&[(b"a", &record)]);
@@ -216,7 +393,7 @@ mod tests {
         assert!(Pack::parse(file(&[(b"a", &record), (b"a", &record)])).is_err());
         assert!(Pack::parse(file(&[(b"a", b"bad!")])).is_err());
         let incomplete = file(&[(b"a", b"VSH1 invalid fields")]);
-        let pack = Pack::parse(incomplete).unwrap();
+        let pack = Packs::new(Pack::parse(incomplete).unwrap(), None);
         assert_eq!(
             pack.translate(|| [1; 32], b"a", |_| Err("fallback".into()))
                 .unwrap_err(),

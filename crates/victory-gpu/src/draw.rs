@@ -2457,6 +2457,7 @@ impl State {
         mesh: &ID3D12GraphicsCommandList6,
         groups: u32,
         mode: crate::pipeline::host::DirectMeshDiagnostic,
+        enabled: bool,
     ) -> bool {
         use crate::pipeline::host::DirectMeshDiagnostic;
         let Some((host, pipeline, variant, targets)) = (|| {
@@ -2508,10 +2509,12 @@ impl State {
             query.begin(&list.list);
         }
         // SAFETY: the original mesh inputs and the diagnostic pipeline are bound.
-        unsafe { mesh.DispatchMesh(groups, 1, 1) };
-        list.bind_mesh_record(variant.pso.as_raw() as usize, &pipeline.name);
-        list.record_mesh(variant.pso.as_raw() as usize, crate::host::stalled_mesh::Mesh::Direct { x: groups });
-        if groups != 0 && (variant.pixel_fixture || variant.pixel_output_witness) {
+        if enabled {
+            unsafe { mesh.DispatchMesh(groups, 1, 1) };
+            list.bind_mesh_record(variant.pso.as_raw() as usize, &pipeline.name);
+            list.record_mesh(variant.pso.as_raw() as usize, crate::host::stalled_mesh::Mesh::Direct { x: groups });
+        }
+        if enabled && groups != 0 && (variant.pixel_fixture || variant.pixel_output_witness) {
             crate::list::arm_mesh_pair_isolation();
         }
         if let Some(query) = query {
@@ -2578,22 +2581,23 @@ impl State {
             && self.prepare_for(list, false, true)
             && match list.list.cast::<ID3D12GraphicsCommandList6>() {
                 Ok(l6) => {
+                    let enabled = list.draw_enabled(self.pipeline);
                     #[cfg(feature = "diagnostics")]
                     list.note_op(|| self.op_text(format!("mesh {x}"), false));
                     #[cfg(feature = "diagnostics")]
                     let diagnostic = matches!(_mode, MeshDispatchMode::Fenced)
                         && crate::pipeline::host::direct_mesh_diagnostic()
-                        .is_some_and(|mode| self.dispatch_mesh_diagnostic(list, &l6, x, mode));
+                        .is_some_and(|mode| self.dispatch_mesh_diagnostic(list, &l6, x, mode, enabled));
                     #[cfg(not(feature = "diagnostics"))]
                     let diagnostic = false;
                     if !diagnostic {
                         self.mesh_scissor(list, true);
                         #[cfg(feature = "diagnostics")]
                         let witness = matches!(_mode, MeshDispatchMode::PixelWitness)
-                            && self.dispatch_mesh_pixel_witness(list, &l6, x);
+                            && enabled && self.dispatch_mesh_pixel_witness(list, &l6, x);
                         #[cfg(not(feature = "diagnostics"))]
                         let witness = false;
-                        if !witness {
+                        if !witness && enabled {
                             // SAFETY: an open list with everything set.
                             unsafe { l6.DispatchMesh(x, 1, 1) };
                             #[cfg(feature = "diagnostics")]
@@ -2602,10 +2606,12 @@ impl State {
                         self.mesh_scissor(list, false);
                     }
                     #[cfg(feature = "diagnostics")]
-                    if x != 0 {
+                    if x != 0 && enabled {
                         list.note_part_direct_mesh();
                     }
-                    DRAWN.fetch_add(1, Ordering::Relaxed);
+                    if enabled {
+                        DRAWN.fetch_add(1, Ordering::Relaxed);
+                    }
                     true
                 }
                 Err(_) => false,
@@ -3162,6 +3168,9 @@ impl State {
         let rects = self.topology == RECTANGLES && !self.completes_rects();
         let ran = ready && (!rects || self.rectangles(list, vertices, first));
         if ran {
+            if !list.draw_enabled(self.pipeline) {
+                return;
+            }
             // Rectangles were expanded into their own vertex buffers.
             let (count, from) = if rects {
                 (vertices / 3 * 6, 0)
@@ -3269,6 +3278,9 @@ impl State {
         }
         let ran = !lost && self.prepare(list, true);
         if ran {
+            if !list.draw_enabled(self.pipeline) {
+                return;
+            }
             #[cfg(feature = "diagnostics")]
             list.note_op(|| self.op_text(format!("indexed {indices}x{instances}"), false));
             // SAFETY: an open list with everything set.
@@ -3533,28 +3545,33 @@ impl State {
         list.note_op(|| {
             self.op_text(format!("indirect kind {kind} max {max} at {arguments:#x}"), kind == DISPATCH)
         });
+        let enabled = kind == DISPATCH || list.draw_enabled(self.pipeline);
         if kind == MESH {
             self.mesh_scissor(list, true);
         }
         // SAFETY: an open list with everything set; the scratch buffer and
         // host copies are kept alive by the list, and the signature is cached.
-        unsafe {
-            list.list.ExecuteIndirect(
-                &signature,
-                max,
-                &bounded,
-                at,
-                counter.as_ref().map(|(s, _)| &s.buffer),
-                counter.as_ref().map_or(0, |(s, at)| s.offset(*at)),
-            )
-        };
+        if enabled {
+            unsafe {
+                list.list.ExecuteIndirect(
+                    &signature,
+                    max,
+                    &bounded,
+                    at,
+                    counter.as_ref().map(|(s, _)| &s.buffer),
+                    counter.as_ref().map_or(0, |(s, at)| s.offset(*at)),
+                )
+            };
+        }
         if kind == MESH {
             #[cfg(feature = "diagnostics")]
-            list.record_mesh(self.host_pipeline, crate::host::stalled_mesh::Mesh::Indirect { arguments, max, count });
+            if enabled {
+                list.record_mesh(self.host_pipeline, crate::host::stalled_mesh::Mesh::Indirect { arguments, max, count });
+            }
             self.mesh_scissor(list, false);
         }
         #[cfg(feature = "diagnostics")]
-        if kind == MESH || kind == DISPATCH {
+        if enabled && (kind == MESH || kind == DISPATCH) {
             list.note_part_dispatch(kind == MESH);
         }
         // The scratch buffer stays readable as arguments: the next draw of
@@ -3562,7 +3579,7 @@ impl State {
         // back (`crate::indirect`).
         if kind == DISPATCH {
             DISPATCHED.fetch_add(1, Ordering::Relaxed);
-        } else {
+        } else if enabled {
             DRAWN.fetch_add(1, Ordering::Relaxed);
         }
         true
@@ -3615,6 +3632,7 @@ impl State {
             return false;
         }
         let FencedMesh { signature, bounded, at, counter, arguments } = mesh;
+        let enabled = list.draw_enabled(self.pipeline);
         list.note_op(|| self.op_text(format!("indirect kind 10 max 1 at {arguments:#x}"), false));
         self.mesh_scissor(list, true);
         let target_before = (cut && crate::capture::fenced_mesh_target_pending())
@@ -3666,14 +3684,16 @@ impl State {
             if let Some(query) = &occlusion {
                 query.begin(&list.list);
             }
-            list.list.ExecuteIndirect(
-                &signature,
-                1,
-                &bounded,
-                at,
-                counter.as_ref().map(|(shadow, _)| &shadow.buffer),
-                counter.as_ref().map_or(0, |(shadow, address)| shadow.offset(*address)),
-            );
+            if enabled {
+                list.list.ExecuteIndirect(
+                    &signature,
+                    1,
+                    &bounded,
+                    at,
+                    counter.as_ref().map(|(shadow, _)| &shadow.buffer),
+                    counter.as_ref().map_or(0, |(shadow, address)| shadow.offset(*address)),
+                );
+            }
             if let Some(query) = &occlusion {
                 query.end(&list.list);
             }
@@ -3683,9 +3703,11 @@ impl State {
                 )]);
             }
         }
-        list.record_mesh(self.host_pipeline, crate::host::stalled_mesh::Mesh::Indirect {
-            arguments, max: 1, count: counter.as_ref().map(|(_, address)| *address),
-        });
+        if enabled {
+            list.record_mesh(self.host_pipeline, crate::host::stalled_mesh::Mesh::Indirect {
+                arguments, max: 1, count: counter.as_ref().map(|(_, address)| *address),
+            });
+        }
         if let Some((slot, target, before, footprint)) = target_before {
             if let Some((after, _)) = crate::capture::read_render_target(list, target) {
                 let frame = crate::queue::presented() + 1;
@@ -3715,10 +3737,12 @@ impl State {
             }
         }
         self.mesh_scissor(list, false);
-        list.note_part_dispatch(true);
-        DRAWN.fetch_add(1, Ordering::Relaxed);
+        if enabled {
+            list.note_part_dispatch(true);
+            DRAWN.fetch_add(1, Ordering::Relaxed);
+        }
         tracing::info!(target: "victory_gpu::memory_watch", list = format_args!("{:#x}", list.trace_id()),
-            guest = format_args!("{arguments:#x}"), cut, counted = counter.is_some(), "fenced indirect mesh draw recorded");
+            guest = format_args!("{arguments:#x}"), cut, counted = counter.is_some(), drawn = enabled, "fenced indirect mesh draw recorded");
         true
     }
 }

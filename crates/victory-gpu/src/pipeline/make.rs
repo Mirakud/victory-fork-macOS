@@ -310,6 +310,7 @@ const REQUESTED: u8 = 2;
 const MAKING: u8 = 3;
 
 struct Queue {
+    required_early: VecDeque<Arc<Pending>>,
     early: VecDeque<Arc<Pending>>,
     requested: VecDeque<Arc<Pending>>,
 }
@@ -317,8 +318,19 @@ struct Queue {
 impl Queue {
     const fn new() -> Self {
         Self {
+            required_early: VecDeque::new(),
             early: VecDeque::new(),
             requested: VecDeque::new(),
+        }
+    }
+
+    /// Selected required pipelines start before other prewarms. Both still
+    /// have the EARLY state and yield to real draw or dispatch requests.
+    fn early_queue(&mut self, p: &Pending) -> &mut VecDeque<Arc<Pending>> {
+        if p.required.is_some() {
+            &mut self.required_early
+        } else {
+            &mut self.early
         }
     }
 
@@ -333,7 +345,7 @@ impl Queue {
         if priority == REQUESTED {
             self.requested.push_back(p.clone());
         } else {
-            self.early.push_back(p.clone());
+            self.early_queue(p).push_back(p.clone());
         }
         Some(prev == NOT_QUEUED)
     }
@@ -342,20 +354,18 @@ impl Queue {
     /// can have entries in both queues, but contributes to WAITING only once.
     fn claim_required(&mut self, p: &Arc<Pending>) -> bool {
         match p.queue_state.swap(MAKING, Ordering::Relaxed) {
-            EARLY => self.early.retain(|entry| !Arc::ptr_eq(entry, p)),
-            REQUESTED => {
-                self.requested.retain(|entry| !Arc::ptr_eq(entry, p));
-                self.early.retain(|entry| !Arc::ptr_eq(entry, p));
-            }
+            REQUESTED => self.requested.retain(|entry| !Arc::ptr_eq(entry, p)),
+            EARLY => {}
             _ => return false,
         }
+        self.early_queue(p).retain(|entry| !Arc::ptr_eq(entry, p));
         true
     }
 
     fn pop(&mut self) -> Option<Arc<Pending>> {
         let p = self.requested.pop_front().or_else(|| {
             // An early entry can have been promoted and claimed already.
-            std::iter::from_fn(|| self.early.pop_front())
+            std::iter::from_fn(|| self.required_early.pop_front().or_else(|| self.early.pop_front()))
                 .find(|p| p.queue_state.load(Ordering::Relaxed) == EARLY)
         })?;
         p.queue_state.store(MAKING, Ordering::Relaxed);
@@ -576,6 +586,36 @@ mod tests {
         });
         assert!(matches!(p.made.get(), Some(None)));
         assert!(ready(&p).is_none());
+    }
+
+    #[test]
+    fn required_prewarms_follow_real_requests_and_keep_fifo_order() {
+        static REPORTED: AtomicBool = AtomicBool::new(false);
+        let pending = |required: bool| {
+            let mut p = Pending::new(Vec::new(), None);
+            p.required = required.then_some(&REPORTED);
+            Arc::new(p)
+        };
+        let mut queue = Queue::new();
+        let regular = [pending(false), pending(false)];
+        let required: [_; 5] = std::array::from_fn(|_| pending(true));
+        let draw = pending(false);
+        for p in regular.iter().chain(&required) {
+            assert_eq!(queue.push(p, EARLY), Some(true));
+        }
+        assert_eq!(queue.push(&required[1], EARLY), None);
+        assert_eq!(queue.push(&draw, REQUESTED), Some(true));
+        assert_eq!(queue.push(&required[2], REQUESTED), Some(false));
+        // A required draw can take its job before a worker, including after promotion.
+        assert_eq!(queue.push(&required[3], REQUESTED), Some(false));
+        assert!(queue.claim_required(&required[3]));
+        assert!(!queue.claim_required(&required[3]));
+        assert!(queue.claim_required(&required[4]));
+
+        for expected in [&draw, &required[2], &required[0], &required[1], &regular[0], &regular[1]] {
+            assert!(Arc::ptr_eq(&queue.pop().unwrap(), expected));
+        }
+        assert!(queue.pop().is_none());
     }
 
     #[test]

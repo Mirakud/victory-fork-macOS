@@ -56,8 +56,12 @@ pub mod shader_cache;
 mod memory;
 #[cfg(windows)]
 mod shadow;
+#[cfg(all(windows, feature = "diagnostics"))]
+mod shader_toggle;
 #[cfg(windows)]
 mod tiles;
+#[cfg(all(windows, feature = "diagnostics"))]
+mod title_pool;
 pub mod signature;
 #[cfg(windows)]
 mod texture;

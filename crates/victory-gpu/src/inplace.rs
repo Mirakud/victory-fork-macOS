@@ -283,9 +283,19 @@ fn views() -> std::sync::MutexGuard<'static, Views> {
     VIEWS.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// XMem owns the actual mappings. This second index serves only the GPU's
+/// fault tracker, in-place heap lookup and optional census.
+fn track_views() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| crate::watch::fault_tracking() || level() != 0 || probe_level() != 0)
+}
+
 /// The runtime made a section of `bytes` for physical pages; `committed`
 /// if with `SEC_COMMIT` (only such a section can be opened as a heap).
 pub fn title_memory_section(section: usize, bytes: u64, committed: bool) {
+    if !track_views() {
+        return;
+    }
     let mut v = views();
     v.sections.retain(|s| s.0 != section);
     v.sections.push((section, bytes, committed));
@@ -294,6 +304,9 @@ pub fn title_memory_section(section: usize, bytes: u64, committed: bool) {
 /// The runtime mapped `[at, at + len)` as a view of `section` from
 /// `offset` on. Call after [`crate::title_memory_remapped`] of the range.
 pub fn title_memory_view(at: usize, len: usize, section: usize, offset: u64) {
+    if !track_views() {
+        return;
+    }
     {
         let mut v = views();
         v.views.insert(at, (len, section, offset));
@@ -311,6 +324,9 @@ pub fn title_memory_view(at: usize, len: usize, section: usize, offset: u64) {
 /// the views that touch it are forgotten (the runtime tells again those it
 /// maps anew).
 pub(crate) fn views_gone(at: usize, len: usize) {
+    if !track_views() {
+        return;
+    }
     let mut v = views();
     if v.views.is_empty() {
         return;

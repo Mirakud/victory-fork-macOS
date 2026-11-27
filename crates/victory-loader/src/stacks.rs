@@ -24,6 +24,20 @@ use crate::crash::{MAX_FRAMES, locate, unwind_into};
 /// Reads `VICTORY_STACKS` and, if set, starts a thread that prints every
 /// thread's stack at each listed time (seconds from now).
 pub fn dump_stacks_on_schedule() {
+    // A run-local trigger lets an external observer sample an actual stall.
+    // Capture once so an unconsumed trigger cannot repeatedly suspend threads.
+    if let Some(path) = std::env::var_os("VICTORY_STACK_TRIGGER") {
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                if std::fs::remove_file(&path).is_ok() {
+                    eprintln!("VIctory: requested thread snapshot");
+                    dump_stacks();
+                    return;
+                }
+            }
+        });
+    }
     let Ok(list) = std::env::var("VICTORY_STACKS") else {
         return;
     };

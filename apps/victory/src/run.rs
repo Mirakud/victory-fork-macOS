@@ -35,6 +35,53 @@ pub fn run(
     } else {
         victory_hle::modules::d3d12x::use_shader_cache(cfg.cache_subdir("shaders")?);
     }
+    #[cfg(feature = "diagnostics")]
+    let (prepared, images) =
+        if std::env::var_os("VICTORY_CARGEN_RESERVE").as_deref() == Some(std::ffi::OsStr::new("1"))
+        {
+            let mut prepared = prepared;
+            anyhow::ensure!(
+                matches!(console, Console::SeriesS),
+                "CMapDataCarGen trial needs Series S"
+            );
+            anyhow::ensure!(
+                hash.as_str() == "b99f876b74d4a77f03af5f878223b27bd647b5c35a79d5decd9f716504239e93",
+                "CMapDataCarGen trial does not recognize this title build"
+            );
+            let world = std::env::var("VICTORY_MAP_POOL_RESERVE").ok();
+            let second = match world.as_deref() {
+                None => None,
+                Some("building") => Some(("building", 0x5ad8e4d, 0x5411e15cu32)),
+                Some("object") => Some(("object", 0x5ad8ecd, 0x39958261u32)),
+                Some(other) => anyhow::bail!("unknown map pool {other}"),
+            };
+            for (name, rva, key) in
+                std::iter::once(("CMapDataCarGen", 0x5ad8f4d, 0x3f678dcfu32)).chain(second)
+            {
+                let offset =
+                    prepared.info.rva_to_file_offset(rva).with_context(|| {
+                        format!("{name} configuration lookup is not file-backed")
+                    })? as usize;
+                let lookup = prepared
+                    .bytes
+                    .get_mut(offset..offset + 12)
+                    .with_context(|| format!("truncated {name} configuration lookup"))?;
+                let mut expected = [0x41, 0xb8, 0, 0, 0, 0, 0x41, 0xb9, 1, 0, 0, 0];
+                expected[2..6].copy_from_slice(&key.to_le_bytes());
+                anyhow::ensure!(lookup == expected, "unexpected {name} configuration lookup");
+                // Select the native 45,000-entry budget before the title constructs
+                // both the storage and its handle table.
+                lookup[2..6].copy_from_slice(&0x5817ce07_u32.to_le_bytes());
+                println!("{name} trial: using the native entitybatch capacity during construction");
+            }
+            let images = images.join("cargen-reserve");
+            (
+                prepared,
+                second.map_or(images.clone(), |(name, _, _)| images.join(name)),
+            )
+        } else {
+            (prepared, images)
+        };
     let image = victory_loader::load(&prepared, &images)?;
     // The program is mapped from the copy `load` wrote: the file's bytes
     // and their patched copy are not read again, and were held for the

@@ -537,6 +537,7 @@ pub(crate) fn start_memory_watch() {
                 submissions_started = started,
                 submissions_finished = finished,
                 submission_call = crate::host::submission_call(),
+                readonly_overlay_hits = readonly[4],
                 "allocation counters"
             );
             std::thread::sleep(std::time::Duration::from_millis(200));

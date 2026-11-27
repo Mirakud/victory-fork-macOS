@@ -723,7 +723,10 @@ pub(crate) fn host() -> Option<&'static Host> {
     HOST.get_or_init(|| match create() {
         Ok(host) => {
             #[cfg(feature = "diagnostics")]
-            crate::copystat::start_memory_watch();
+            {
+                crate::copystat::start_memory_watch();
+                crate::title_pool::start();
+            }
             Some(host)
         }
         Err(e) => {
@@ -2023,6 +2026,8 @@ enum Step {
 /// the upload buffers its GPU commands read, kept until the list is reset.
 #[derive(Default)]
 struct Deferred {
+    #[cfg(feature = "diagnostics")]
+    shader_counts: crate::shader_toggle::ListCounts,
     #[cfg(feature = "diagnostics")]
     mesh_records: Option<std::sync::Arc<stalled_mesh::Records>>,
     /// Destination, source, bytes.
@@ -6008,12 +6013,22 @@ impl Host {
             }
             lists.push(Some(check));
         }
+        #[cfg(feature = "diagnostics")]
+        let count_submitted = |body: &[&HostList]| {
+            if crate::shader_toggle::enabled() {
+                for list in body {
+                    crate::shader_toggle::submit(&list.deferred().shader_counts);
+                }
+            }
+        };
         let prepared = std::time::Instant::now();
         if late {
             *submitted += 1;
             // SAFETY: closed lists; the fence is ours.
             let signalled = unsafe {
                 self.queue.ExecuteCommandLists(&lists);
+                #[cfg(feature = "diagnostics")]
+                count_submitted(runs);
                 self.queue.Signal(&self.fence, *submitted)
             };
             self.card_sent();
@@ -6131,6 +6146,12 @@ impl Host {
                 #[cfg(feature = "diagnostics")]
                 SubmissionCall::Execute.begin();
                 self.queue.ExecuteCommandLists(group);
+                #[cfg(feature = "diagnostics")]
+                {
+                    let limit = if timing() { 1 } else { sync_list_limit() };
+                    let first = i * limit;
+                    count_submitted(&runs[first..first.saturating_add(limit).min(runs.len())]);
+                }
                 #[cfg(feature = "diagnostics")]
                 SubmissionCall::ClockSignal.begin();
                 self.card_sent();
@@ -7159,6 +7180,23 @@ impl HostList {
             && self.twins.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
     }
 
+    /// Only called after a graphics command can run. Compute and its resource preparation
+    /// do not pass here. The per-list counts survive replay and are cleared by reset.
+    #[inline]
+    pub(crate) fn draw_enabled(&self, pipeline: usize) -> bool {
+        #[cfg(feature = "diagnostics")]
+        if crate::shader_toggle::enabled()
+            && let Some(id) = crate::pipeline::graphics_id(pipeline as crate::object::This)
+        {
+            let draw = crate::shader_toggle::permits(id);
+            self.deferred().shader_counts.entry(id).or_default().record(draw);
+            return draw;
+        }
+        #[cfg(not(feature = "diagnostics"))]
+        let _ = pipeline;
+        true
+    }
+
     /// Notes a pipeline the list binds.
     #[cfg(feature = "diagnostics")]
     pub(crate) fn bind_mesh_record(&self, pso: usize, shaders: &str) {
@@ -7595,23 +7633,25 @@ impl HostList {
         #[cfg(feature = "diagnostics")]
         use crate::copystat::{C, add};
         for step in &self.deferred().copies {
-            let started = std::time::Instant::now();
-            let copied = match step {
+            let (started, copied) = match step {
                 &Step::Copy(dst, src, len) => {
+                    // The flush accounts for its own refreshes in PREPARING.
+                    batch.title_written();
+                    let started = std::time::Instant::now();
                     #[cfg(feature = "diagnostics")]
                     {
                         add(C::Copies, 1);
                         add(C::CopyBytes, len as u64);
                     }
-                    batch.title_written();
                     #[cfg(feature = "diagnostics")]
                     fill_check::copy_runs(dst, src, len);
                     copy_mapped(dst as *mut u8, src as *const u8, len, true);
                     // With the submission's one asking: the journal learns it.
                     crate::watch::wrote(dst, len);
-                    len
+                    (started, len)
                 }
                 &Step::Fill(dst, src, len) => {
+                    let started = std::time::Instant::now();
                     #[cfg(feature = "diagnostics")]
                     {
                         add(C::Copies, 1);
@@ -7619,7 +7659,7 @@ impl HostList {
                         fill_check::runs(src, len);
                     }
                     copy_mapped(dst as *mut u8, src as *const u8, len, false);
-                    len
+                    (started, len)
                 }
                 Step::Refresh(shadow, address, len) => {
                     #[cfg(feature = "diagnostics")]
@@ -7634,6 +7674,8 @@ impl HostList {
                     if matches!(step, Step::Run(_)) {
                         batch.title_written();
                     }
+                    #[cfg(feature = "diagnostics")]
+                    let started = std::time::Instant::now();
                     work();
                     // It wrote title memory, where is not known here: the
                     // submission's one asking ends, later refreshes ask anew.
@@ -7923,7 +7965,7 @@ fn read_sparse(src: *const u8, dst: *mut u8, len: usize, dedup: bool) -> (bool, 
         MEM_COMMIT, MEMORY_BASIC_INFORMATION, PAGE_NOACCESS, VirtualQuery,
     };
     let address = src as usize;
-    sparse_read::walk(
+    sparse_read::walk_source(
         address,
         len,
         dedup,
@@ -8269,6 +8311,11 @@ impl Meter {
         crate::descriptor::sync_line(frames);
         late_line(frames);
         if sparse_read::enabled() || sparse_read::small_enabled() {
+            let [attempts, successes, bytes, vm_queries] = sparse_read::take_grouped_counts();
+            if attempts != 0 || vm_queries != 0 {
+                tracing::info!(target: "victory_gpu::memory_watch", frames, attempts, successes, bytes, vm_queries,
+                    "grouped kernel reads of sparse title memory");
+            }
             for (size, counts) in ["one_page_fragment", "lt_64k_cross_page", "64k_to_1m", "at_least_1m"]
                 .into_iter()
                 .zip(sparse_read::take_counts())

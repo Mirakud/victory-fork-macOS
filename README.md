@@ -4,6 +4,10 @@
 
 *Premiers déplacements dans la prison sur Mac M3. [Voir le personnage de profil](docs/macos/030001-prison-profil.png).*
 
+<a href="docs/macos/menu-game-macos.png"><img src="docs/macos/menu-game-macos.png" alt="Menu Game sous macOS, avec Save Game sélectionné au-dessus de Load Game et New Game" width="960"></a>
+
+*Menu Game sur macOS. Avec Save Game sélectionné, la fenêtre indique 5 FPS, 197,2 ms par image et 64 dessins par image.*
+
 Victory traduit les appels d’un titre Xbox Series vers Direct3D 12. Le 27 novembre 2026, Mirakud a franchi la cinématique puis déplacé le personnage dans la prison avec le profil Series S, Wine Sikarugir et D3DMetal 4.0 bêta 3. La capture indique 1 751,9 ms par image et 4 514 dessins par image. Une partie du visage et du cou manque à l’écran.
 
 Le lanceur local `tools/run_victory_d3dmetal4_mac.command` a sélectionné le moteur `6c32891` et le traducteur historique. Il a chargé 2 319 shaders en 118 ms et 187 traductions complémentaires en 9 ms. Belobug est un profil expérimental distinct. Le moniteur a enregistré 30 min 17 s avant une violation d’accès et une sortie avec le code 5. [Empreintes de la session 030001](docs/macos/030001.json) · [Lancer le profil prison](#démarrer-victory)
@@ -170,4 +174,4 @@ Les dépendances Rust sont épinglées par Cargo. Figurent notamment windows-rs 
 
 ## Licence et contenu
 
-Le code Victory est distribué sous GPL-3.0-or-later. Les attributions et notices d’origine sont conservées. Les tables constantes du format BCPack gardent leur statut particulier documenté en amont. Les deux captures originales de la prison portent la signature « mirakud » dans l’encart supérieur droit. Les copies des essais précédents portent la signature « mirakud » en bas à droite. Le générateur contrôle la conservation de chaque pixel hors de cette signature. Les captures illustrent exclusivement les essais de ce fork ; la licence du code ne s’applique pas aux images du titre. [Licence](LICENSE) · [Règles amont relatives aux ressources](docs/asset-policy.md)
+Le code Victory est distribué sous GPL-3.0-or-later. Les attributions et notices d’origine sont conservées. Les tables constantes du format BCPack gardent leur statut particulier documenté en amont. Les captures originales de la prison et du menu portent la signature « mirakud » dans l’encart supérieur droit. Les copies des essais précédents portent la signature « mirakud » en bas à droite. Le générateur contrôle la conservation de chaque pixel hors de cette signature. Les captures illustrent exclusivement les essais de ce fork ; la licence du code ne s’applique pas aux images du titre. [Licence](LICENSE) · [Règles amont relatives aux ressources](docs/asset-policy.md)

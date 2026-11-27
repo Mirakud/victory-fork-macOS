@@ -148,8 +148,13 @@ pub fn check(path: &str, content: &[u8]) -> Vec<String> {
     let name = path.rsplit('/').next().unwrap_or(path);
     let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
     // Only the reviewed PNGs shown by the Mac fork's README.
-    // Original Retina captures of the first playable prison session.
-    let prison_capture = matches!(path, "docs/macos/030001-prison-cour.png" | "docs/macos/030001-prison-profil.png");
+    // Original Retina captures supplied by the player on macOS.
+    let retina_capture = matches!(
+        path,
+        "docs/macos/030001-prison-cour.png"
+            | "docs/macos/030001-prison-profil.png"
+            | "docs/macos/menu-game-macos.png"
+    );
     let reviewed_capture = matches!(
         path,
         "docs/macos/rue-1.png"
@@ -174,7 +179,7 @@ pub fn check(path: &str, content: &[u8]) -> Vec<String> {
             | "docs/macos/011924-frame-2518.png"
             | "docs/macos/011924-frame-2542.png"
     );
-    if (reviewed_capture && content.len() <= MAX_FILE_SIZE || prison_capture && content.len() <= 5 * 1024 * 1024)
+    if (reviewed_capture && content.len() <= MAX_FILE_SIZE || retina_capture && content.len() <= 5 * 1024 * 1024)
         && content.starts_with(b"\x89PNG\r\n\x1a\n")
         && content.ends_with(b"IEND\xae\x42\x60\x82")
     {

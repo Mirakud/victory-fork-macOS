@@ -1,10 +1,12 @@
 # Victory sur macOS
 
-<a href="docs/macos/frame-1872.png"><img src="docs/macos/frame-1872.png" alt="Lumière du jour sur le littoral, au-delà de la ville, pendant la cinématique de Victory" width="960"></a>
+<a href="docs/macos/030001-prison-cour.png"><img src="docs/macos/030001-prison-cour.png" alt="Dans la cour de la prison sur Mac M3, le jeu invite à déplacer le personnage et la caméra" width="960"></a>
 
-*Le littoral en plein jour, trame 1872 de l’essai 200227 sur Mac M3.*
+*Premiers déplacements dans la prison sur Mac M3. [Voir le personnage de profil](docs/macos/030001-prison-profil.png).*
 
-Victory traduit les appels d’un titre Xbox Series vers Direct3D 12. Sur un Mac M3 de 16 Gio, le profil Series S sous Wine Sikarugir et D3DMetal 4 affiche la rue de nuit, la voiture, le passage couvert puis le littoral. Le joueur a confirmé que la cinématique continuait quand la jauge verte est apparue. Les copies mémoire prennent encore plusieurs secondes par image et la fin de la cinématique reste à vérifier.
+Victory traduit les appels d’un titre Xbox Series vers Direct3D 12. Le 27 novembre 2026, Mirakud a franchi la cinématique puis déplacé le personnage dans la prison avec le profil Series S, Wine Sikarugir et D3DMetal 4.0 bêta 3. La capture indique 1 751,9 ms par image et 4 514 dessins par image. Une partie du visage et du cou manque à l’écran.
+
+Le lanceur local `tools/run_victory_d3dmetal4_mac.command` a sélectionné le moteur `6c32891` et le traducteur historique. Il a chargé 2 319 shaders en 118 ms et 187 traductions complémentaires en 9 ms. Belobug est un profil expérimental distinct. Le moniteur a enregistré 30 min 17 s avant une violation d’accès et une sortie avec le code 5. [Empreintes de la session 030001](docs/macos/030001.json) · [Lancer le profil prison](#démarrer-victory)
 
 ## Essai 011924 du 27 novembre 2026
 
@@ -118,7 +120,9 @@ python3 tools/macos/run.py \
     --output "$RUNS_DIR" --preview
 ```
 
-Retirer `--preview` pour exécuter. `--data` copie les données privées d’un profil dans la nouvelle session. Les options `--shader-pack` et `--pipeline-manifest` acceptent des caches et priorités générés localement pour une version compatible. Au choix de profil du jeu, confirmer Player avec Entrée. Chaque session enregistre le journal et la télémétrie. Le moniteur arrête le groupe de processus à 9 216 Mio câblés ou dès l’erreur Metal de mémoire insuffisante. Le lanceur reprend les réglages de base de la rue, tandis que les profils, priorités spécifiques et entrées utilisées lors du développement restent propres aux essais.
+Le raccourci du dépôt `tools/run_victory_d3dmetal4_mac.command` accepte les mêmes chemins et sélectionne directement le profil prison. Avec `run.py`, ajoutez `--prison-profile --data "$VICTORY_DATA"` à cette commande. Avec le raccourci, seul `--data "$VICTORY_DATA"` est à ajouter aux chemins. Pour reproduire le préchauffage, fournissez aussi `--shader-pack "$SHADER_PACK" --shader-overlay "$SHADER_OVERLAY" --pipeline-manifest "$PIPELINE_MANIFEST"` avec vos fichiers locaux compatibles. Ce profil active le panneau Shaders A/B, applique les distances de détail de la session et laisse macOS gérer la RAM. Le moniteur continue à surveiller les erreurs mémoire Metal.
+
+Retirer `--preview` pour exécuter. `--data` copie les données privées d’un profil dans la nouvelle session. Les options `--shader-pack` et `--pipeline-manifest` acceptent des caches et priorités générés localement pour une version compatible. Au choix de profil du jeu, confirmer Player avec Entrée. Chaque session enregistre le journal et la télémétrie. Avec les profils de rue et de cinématique, le moniteur arrête le groupe de processus à 9 216 Mio câblés ou dès l’erreur Metal de mémoire insuffisante. Le lanceur reprend les réglages de base de la rue, tandis que les profils, priorités spécifiques et entrées utilisées lors du développement restent propres aux essais.
 
 Pour reprendre les réglages de 011924, ajoutez `--intro-profile --data "$VICTORY_DATA"` avec votre dossier de profil. Activez `--shader-ab` pour isoler des paires graphiques dans le HUD et `--capture-shader-misses` pour enregistrer les conteneurs manquants dans le sous-dossier `shader-misses` de la session. Au lancement suivant, `--shader-overlay` accepte le fichier VSP1 préparé avec ces traductions. [Préparer et vérifier ses shaders sur Apple Silicon](tools/shaders/prepare-arm64/USAGE.md)
 
@@ -166,4 +170,4 @@ Les dépendances Rust sont épinglées par Cargo. Figurent notamment windows-rs 
 
 ## Licence et contenu
 
-Le code Victory est distribué sous GPL-3.0-or-later. Les attributions et notices d’origine sont conservées. Les tables constantes du format BCPack gardent leur statut particulier documenté en amont. Les copies d’affichage portent la signature « mirakud » en bas à droite. Le générateur contrôle la conservation de chaque pixel hors de cette signature. Les captures illustrent exclusivement les essais de ce fork ; la licence du code ne s’applique pas aux images du titre. [Licence](LICENSE) · [Règles amont relatives aux ressources](docs/asset-policy.md)
+Le code Victory est distribué sous GPL-3.0-or-later. Les attributions et notices d’origine sont conservées. Les tables constantes du format BCPack gardent leur statut particulier documenté en amont. Les deux captures originales de la prison portent la signature « mirakud » dans l’encart supérieur droit. Les copies des essais précédents portent la signature « mirakud » en bas à droite. Le générateur contrôle la conservation de chaque pixel hors de cette signature. Les captures illustrent exclusivement les essais de ce fork ; la licence du code ne s’applique pas aux images du titre. [Licence](LICENSE) · [Règles amont relatives aux ressources](docs/asset-policy.md)

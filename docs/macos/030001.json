@@ -1,0 +1,19 @@
+{
+  "session": "030001",
+  "runtime_commit": "6c32891",
+  "pe_sha256": "e40d36bbc7221c718fecb936b149844161f94020ec65f7630b6f5229381f8b0b",
+  "start_local": "2026-11-27T03:00:01+01:00",
+  "end_local": "2026-11-27T03:30:18+01:00",
+  "exit_code": 5,
+  "console": "series-s",
+  "readonly_shader_pack_sha256": "9d9b6d8f3f1e592b0abd97203ea5d61debc11df10c161a729bd239343fdb97c7",
+  "readonly_shader_overlay_sha256": "7b2b50acf8ae0a07c5fa22251a043f470e6af37f156f60a700eee0b839750516",
+  "prewarm_manifest_sha256": "7d12395b27976aefa458ea60e42fd371cefb71c524caed41f9153224189690cc",
+  "lod_scale": 0.45,
+  "small_cull_threshold": 2.0,
+  "translation_build": "578b25415d58675d5ba8637836bf4f93baf92f43cb501d6a0365e01c3cec4218",
+  "primary_entries": 2319,
+  "overlay_entries": 187,
+  "screen_ms_per_frame": 1751.9,
+  "screen_draws_per_frame": 4514
+}

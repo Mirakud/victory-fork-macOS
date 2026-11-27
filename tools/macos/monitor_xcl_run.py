@@ -119,7 +119,9 @@ def main() -> int:
                               help="Stop XCL if system free memory falls below this percentage (default: 10)")
     percent_mode.add_argument("--report-peak-used-percent", type=int, metavar="PERCENT",
                               help="Log peak used percentage and overshoot without stopping on percentage. "
-                                   "Requires an absolute telemetry path and a wired cap of at most 10240 MiB.")
+                                   "Requires an absolute telemetry path and either a wired cap or --no-memory-limit.")
+    parser.add_argument("--no-memory-limit", action="store_true",
+                        help="Record memory usage while letting macOS manage all available RAM.")
     parser.add_argument("--max-wired-mib", type=int,
                         help="Wired memory threshold in MiB (stops XCL unless throttling is selected)")
     parser.add_argument("--throttle-process-mib", type=int, metavar="MIB",
@@ -136,16 +138,19 @@ def main() -> int:
                         help="Seconds to wait between memory samples (default: 1)")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
+    if args.no_memory_limit and any(value is not None for value in
+                                    (args.max_wired_mib, args.min_free_percent, args.throttle_process_mib)):
+        parser.error("--no-memory-limit cannot be combined with a memory stop or throttle")
     usage = None
     if args.report_peak_used_percent is not None:
         if not 1 <= args.report_peak_used_percent <= 100:
             parser.error("--report-peak-used-percent must be from 1 to 100")
-        if args.max_wired_mib is None or args.max_wired_mib > 10240:
+        if not args.no_memory_limit and (args.max_wired_mib is None or args.max_wired_mib > 10240):
             parser.error("--report-peak-used-percent requires --max-wired-mib of at most 10240")
         if args.telemetry_path is None:
             parser.error("--report-peak-used-percent requires --telemetry-path")
         usage = PeakUsage(args.report_peak_used_percent)
-    elif args.min_free_percent is None:
+    elif args.min_free_percent is None and not args.no_memory_limit:
         args.min_free_percent = 10
     if args.min_free_percent is not None and not 1 <= args.min_free_percent <= 100:
         parser.error("--min-free-percent must be from 1 to 100")

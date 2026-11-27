@@ -45,6 +45,42 @@ INTRO = {
 }
 
 
+# Le profil prison conserve les passes du moteur 6c32891.
+PRISON = {
+    "VICTORY_TEXTURE_NO_WAIT": "1", "VICTORY_FAST_MIRROR_COMPARE": "1",
+    "VICTORY_SMALL_SPARSE_READ": "1", "VICTORY_SPARSE_READ_RUNS": "1",
+    "VICTORY_STORAGE_VIEW_CACHE": "1", "VICTORY_RELAY_STALE_WRITES": "1",
+    "VICTORY_DECLINE_RECORDED_NOOPS": "1", "VICTORY_TRACE_STALLED_MESH": "1",
+    "VICTORY_CARGEN_RESERVE": "1", "VICTORY_MAP_POOL_RESERVE": "building",
+    "VICTORY_LOG": (
+        "warn,"
+        "victory_gpu::memory_watch=info,"
+        "victory_gpu::host=info,"
+        "victory_gpu::shadow=info,"
+        "victory_hle::modules::xmem=info"
+    ),
+    "VICTORY_PREWARM_PIPELINE_KEYS": (
+        "f097e3daff75e2fafc8403a56be48e19,"
+        "5d619a339c8cbd8aef13855864f4fc33,"
+        "c29be1816e455b60991b959396a442af,"
+        "50ece4da57f39c0ef6090e9de8a0f577,"
+        "9b1e557f10ca3e249881765fe527e51b,"
+        "62a5c8deb38de8e3fcc8a87059a8a5ea,"
+        "cec72f2c49336e8f454a689750848858,"
+        "7e8ac42c301540aed279377e2bf25823"
+    ),
+    "VICTORY_REQUIRED_PIPELINE_KEYS": (
+        "c41b40db9a2533b68af018cd90ccdb26,"
+        "b21dd30ebf9356697ff67def8475381a,"
+        "ad4724939f988a4e209fcf3e24eef61b,"
+        "bbaf821d76e9fa143059b70a59c4e54a,"
+        "750bf0bbce5eac8cce2dbca9ae4baef4,"
+        "0b7a96fcae76f7001affdb9e0eb6e887,"
+        "2320db8841d21997b266cc4e4a789032"
+    ),
+}
+
+
 def sha256(path):
     with path.open("rb") as source:
         return hashlib.file_digest(source, "sha256").hexdigest()
@@ -82,8 +118,10 @@ def drive_z(path):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    for name in ("victory", "title", "engine", "bottle", "output"):
+    for name in ("victory", "engine", "bottle", "output"):
         p.add_argument("--" + name, type=absolute, required=True)
+    # Keep a staged title beside its config and archives even if the EXE is a symlink.
+    p.add_argument("--title", type=lambda path: Path(path).expanduser().absolute(), required=True)
     p.add_argument("--data", type=absolute, help="dossier de données Victory à copier pour cet essai")
     p.add_argument("--shader-pack", type=absolute, help="pack privé compatible avec le binaire utilisé")
     p.add_argument("--shader-overlay", type=absolute, help="pack VSP1 de traductions supplémentaires du même build")
@@ -92,7 +130,9 @@ def main():
     p.add_argument("--shader-refusal-cache", type=absolute, metavar="DOSSIER", help="conserver les refus de traduction reconnus, isolés par empreinte de Victory")
     p.add_argument("--prewarm-pipeline", type=pipeline_key, action="append", default=[], help="clé de pipeline à préparer à sa création (8 maximum)")
     p.add_argument("--required-pipeline", type=pipeline_key, action="append", default=[], help="clé dont le premier dessin attend le résultat (8 maximum)")
-    p.add_argument("--intro-profile", action="store_true", help="profil expérimental Series S des pools et des lectures ; applique LOD 0,45 et seuil 2 à la copie de --data")
+    profiles = p.add_mutually_exclusive_group()
+    profiles.add_argument("--prison-profile", action="store_true", help="réglages de la session jouable 030001, panneau shaders et mémoire gérée par macOS")
+    profiles.add_argument("--intro-profile", action="store_true", help="profil expérimental Series S des pools et des lectures ; applique LOD 0,45 et seuil 2 à la copie de --data")
     p.add_argument("--pipeline-manifest", type=absolute, help="liste privée de clés à préparer")
     p.add_argument("--perf-hud", action="store_true", help="afficher les FPS mesurés et la mémoire de Victory au-dessus du jeu")
     p.add_argument("--preview", action="store_true", help="afficher la commande sans créer de dossier ni lancer Wine")
@@ -110,9 +150,14 @@ def main():
     if len(args.prewarm_pipeline) > 8 or len(args.required_pipeline) > 8:
         p.error("huit clés au maximum pour chaque sélection de pipelines")
     settings = None
-    if args.intro_profile:
+    if args.prison_profile:
+        args.shader_ab = True
+        args.capture_shader_misses = bool(args.shader_pack)
+        if args.shader_pack and not args.shader_refusal_cache:
+            args.shader_refusal_cache = args.output / "shader-refusals"
+    if args.intro_profile or args.prison_profile:
         if not args.data:
-            p.error("--intro-profile nécessite les données de la partie à copier avec --data")
+            p.error("le profil choisi nécessite les données de la partie à copier avec --data")
         try:
             settings = intro_settings(args.title, args.data)
         except (OSError, ValueError, ET.ParseError) as exc:
@@ -135,6 +180,10 @@ def main():
         config["VICTORY_READONLY_SHADER_PACK"] = drive_z(args.shader_pack)
     if args.intro_profile:
         config.update(INTRO)
+    elif args.prison_profile:
+        config.update(PRISON)
+        config["VICTORY_CONFIRM_FILE"] = drive_z(run / "confirm")
+        config["VICTORY_CAPTURE_FILE"] = drive_z(run / "capture")
     if args.shader_overlay:
         config["VICTORY_READONLY_SHADER_OVERLAY"] = drive_z(args.shader_overlay)
     if args.shader_ab:
@@ -158,8 +207,9 @@ def main():
     child = [sys.executable, str(TOOLS/"wine_sikarugir.py"), "--bottle", str(args.bottle),
              "--no-gui", "--env", shlex.join([key+"="+value for key, value in config.items()]),
              "--wait", str(args.victory), "run", drive_z(args.title), "--execute", "--console", "series-s"]
-    command = [sys.executable, str(TOOLS/"monitor_xcl_run.py"), "--max-wired-mib", "9216",
-               "--report-peak-used-percent", "95", "--poll-interval", "0.05",
+    memory = ["--no-memory-limit"] if args.prison_profile else ["--max-wired-mib", "9216"]
+    command = [sys.executable, str(TOOLS/"monitor_xcl_run.py"), *memory,
+               "--report-peak-used-percent", "95", "--poll-interval", "1.0" if args.prison_profile else "0.05",
                "--telemetry-path", str(run/"telemetry.jsonl"), "--", *child]
     if args.preview:
         print(shlex.join(command))
@@ -171,7 +221,7 @@ def main():
         hud_binary = build_hud(TOOLS / "victory_perf_hud.swift")
     env = dict(os.environ, UNCORK_SIKARUGIR_ENGINE=str(args.engine), VICTORY_MAC_BOTTLE=str(args.bottle))
     record = {"mode": "run", "command": command, "perf_hud": args.perf_hud, "shader_ab": args.shader_ab,
-              "intro_profile": args.intro_profile, "capture_shader_misses": args.capture_shader_misses}
+              "intro_profile": args.intro_profile, "prison_profile": args.prison_profile, "capture_shader_misses": args.capture_shader_misses}
     for name, pack in (("readonly_shader_pack", args.shader_pack), ("readonly_shader_overlay", args.shader_overlay)):
         if pack:
             record[name] = str(pack)

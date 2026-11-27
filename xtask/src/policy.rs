@@ -148,7 +148,9 @@ pub fn check(path: &str, content: &[u8]) -> Vec<String> {
     let name = path.rsplit('/').next().unwrap_or(path);
     let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
     // Only the reviewed PNGs shown by the Mac fork's README.
-    if matches!(
+    // Original Retina captures of the first playable prison session.
+    let prison_capture = matches!(path, "docs/macos/030001-prison-cour.png" | "docs/macos/030001-prison-profil.png");
+    let reviewed_capture = matches!(
         path,
         "docs/macos/rue-1.png"
             | "docs/macos/rue-2.png"
@@ -171,7 +173,8 @@ pub fn check(path: &str, content: &[u8]) -> Vec<String> {
             | "docs/macos/011924-frame-2410.png"
             | "docs/macos/011924-frame-2518.png"
             | "docs/macos/011924-frame-2542.png"
-    ) && content.len() <= MAX_FILE_SIZE
+    );
+    if (reviewed_capture && content.len() <= MAX_FILE_SIZE || prison_capture && content.len() <= 5 * 1024 * 1024)
         && content.starts_with(b"\x89PNG\r\n\x1a\n")
         && content.ends_with(b"IEND\xae\x42\x60\x82")
     {
@@ -179,7 +182,8 @@ pub fn check(path: &str, content: &[u8]) -> Vec<String> {
     }
     let mac_tool = (path.starts_with("tools/macos/") || path.starts_with("tools/shaders/"))
         && ext.as_deref() == Some("py");
-    let allowed = path == "tools/macos/victory_perf_hud.swift"
+    let allowed = path == "tools/run_victory_d3dmetal4_mac.command"
+        || path == "tools/macos/victory_perf_hud.swift"
         || mac_tool
         || ALLOWED_NAMES.contains(&name)
         || ext

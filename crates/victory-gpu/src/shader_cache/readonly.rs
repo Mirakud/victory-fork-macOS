@@ -6,14 +6,19 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, Read};
 use std::ops::Range;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 use victory_shader::emit::HostShader;
 
+#[cfg(windows)]
+#[path = "belobug.rs"]
+pub(crate) mod belobug;
 #[path = "refusal.rs"]
 mod refusal;
+#[path = "store.rs"]
+mod store;
 
 const MAGIC: &[u8; 8] = b"VSP1\r\n\x1a\n";
 const MAX_BYTES: usize = 256 << 20;
@@ -42,7 +47,16 @@ pub fn preload(path: &Path) {
 }
 
 pub(super) fn active() -> Option<&'static Packs> {
-    PACKS.get()
+    static STORE_ONLY: OnceLock<Option<Packs>> = OnceLock::new();
+    PACKS.get().or_else(|| {
+        STORE_ONLY.get_or_init(|| Some(Packs {
+            primary: None,
+            overlay: None,
+            store: Some(store::configured()?),
+            warned_mismatch: AtomicBool::new(false),
+            stats: Default::default(),
+        })).as_ref()
+    })
 }
 
 /// Optional offline preparation with the same executable and host settings
@@ -70,8 +84,8 @@ pub fn warm(container: &[u8]) -> Result<bool, String> {
 }
 
 #[cfg(feature = "diagnostics")]
-pub(crate) fn counters() -> [u64; 5] {
-    active().map_or([0; 5], |pack| {
+pub(crate) fn counters() -> [u64; 9] {
+    active().map_or([0; 9], |pack| {
         pack.stats.each_ref().map(|c| c.load(Ordering::Relaxed))
     })
 }
@@ -83,11 +97,13 @@ struct Pack {
 }
 
 pub(super) struct Packs {
-    primary: Pack,
+    primary: Option<Pack>,
     overlay: Option<Pack>,
+    store: Option<PathBuf>,
     warned_mismatch: AtomicBool,
     // Total hits, misses, lookup time, fallback time, hits from the overlay.
-    stats: [AtomicU64; 5],
+    // Store hits, filesystem time, lookups and unreadable/malformed records.
+    stats: [AtomicU64; 9],
 }
 
 fn invalid(msg: &'static str) -> io::Error {
@@ -180,7 +196,8 @@ impl Packs {
                 }
             }
         });
-        Self { primary, overlay, warned_mismatch: AtomicBool::new(false), stats: Default::default() }
+        Self { primary: Some(primary), overlay, store: store::configured(),
+            warned_mismatch: AtomicBool::new(false), stats: Default::default() }
     }
 
     pub(super) fn translate(
@@ -192,20 +209,44 @@ impl Packs {
         let began = Instant::now();
         let build = build();
         let hash = blake3::hash(guest);
-        let matching = self.primary.build == build;
-        let found = if matching {
-            self.primary.shader(hash.as_bytes()).or_else(|| {
+        let matching = self.primary.as_ref().is_none_or(|primary| primary.build == build);
+        let packed = self.primary.as_ref().and_then(|primary| {
+            if !matching {
+                if !self.warned_mismatch.swap(true, Ordering::Relaxed) {
+                    tracing::warn!(target: "victory_gpu::memory_watch", packed = %blake3::Hash::from(primary.build),
+                        actual = %blake3::Hash::from(build), "read-only shader pack build mismatch");
+                }
+                return None;
+            }
+            primary.shader(hash.as_bytes()).or_else(|| {
                 let shader = self.overlay.as_ref()?.shader(hash.as_bytes())?;
                 self.stats[4].fetch_add(1, Ordering::Relaxed);
                 Some(shader)
             })
-        } else {
-            if !self.warned_mismatch.swap(true, Ordering::Relaxed) {
-                tracing::warn!(target: "victory_gpu::memory_watch", packed = %blake3::Hash::from(self.primary.build),
-                    actual = %blake3::Hash::from(build), "read-only shader pack build mismatch");
+        });
+        let found = packed.or_else(|| {
+            let root = self.store.as_deref()?;
+            self.stats[7].fetch_add(1, Ordering::Relaxed);
+            match store::lookup(root, &build, guest, &self.stats[6]) {
+                Ok(shader) => {
+                    let hits = self.stats[5].fetch_add(1, Ordering::Relaxed) + 1;
+                    if hits.is_power_of_two() {
+                        tracing::info!(target: "victory_gpu::memory_watch", hits,
+                            "reused prepared shaders from the on-demand store");
+                    }
+                    Some(shader)
+                }
+                Err(error) => {
+                    if error.kind() != io::ErrorKind::NotFound
+                        && self.stats[8].fetch_add(1, Ordering::Relaxed) == 0
+                    {
+                        tracing::warn!(target: "victory_gpu::memory_watch", %error,
+                            "unreadable shader store entry; using normal translation fallback");
+                    }
+                    None
+                }
             }
-            None
-        };
+        });
         self.stats[2].fetch_add(began.elapsed().as_micros() as u64, Ordering::Relaxed);
         if let Some(shader) = found {
             self.stats[0].fetch_add(1, Ordering::Relaxed);
@@ -381,6 +422,54 @@ mod tests {
             assert_eq!(packs.translate(|| [1; 32], b"added", |_| Err("translated".into())).unwrap_err(), "translated");
             assert_eq!(packs.stats[4].load(Ordering::Relaxed), 0);
         }
+    }
+
+    #[test]
+    fn disk_store_follows_both_packs_and_recovers_from_invalid_entries() {
+        use victory_pipeline::Cache;
+        let directory = tempfile::tempdir().unwrap();
+        let store = Cache::open(directory.path()).unwrap();
+        let build = [1; 32];
+        let guest = b"disk only";
+        let valid_shader = || {
+            let mut shader = super::super::decode(&record()).unwrap();
+            shader.dxil = include_bytes!("../host/card_compare.dxil").to_vec();
+            shader
+        };
+        // Publish with the ordinary converter exactly as the ARM64 helper does.
+        super::super::cached(&store, &build, guest, |_| Ok(valid_shader())).unwrap();
+        let path = store::key(&build, guest).path_under(directory.path());
+        let valid = std::fs::read(&path).unwrap();
+        let overlay_path = directory.path().join("overlay.vsp");
+        std::fs::write(&overlay_path, file(&[(b"overlay", &record())])).unwrap();
+        let primary = Pack::parse(file(&[(b"primary", &record())])).unwrap();
+        let mut packs = Packs::new(primary, Some(&overlay_path));
+        packs.store = Some(directory.path().to_owned());
+
+        for guest in [b"primary".as_slice(), b"overlay"] {
+            assert_eq!(packs.translate(|| build, guest, |_| panic!()).unwrap().dxil, b"abc");
+        }
+        assert_eq!(packs.stats[7].load(Ordering::Relaxed), 0);
+        assert_eq!(packs.translate(|| build, guest, |_| panic!()).unwrap().dxil, valid_shader().dxil);
+        assert_eq!(packs.stats[5].load(Ordering::Relaxed), 1);
+        let error = |_: &[u8]| Err::<HostShader, _>("original compiler error".into());
+        assert_eq!(packs.translate(|| [2; 32], guest, error).unwrap_err(), "original compiler error");
+        assert_eq!(packs.translate(|| build, b"other guest", error).unwrap_err(), "original compiler error");
+
+        for malformed in [b"VSH1".as_slice(), &record(), &valid[..valid.len() - 1]] {
+            std::fs::write(&path, malformed).unwrap();
+            assert_eq!(packs.translate(|| build, guest, error).unwrap_err(), "original compiler error");
+            assert_eq!(std::fs::read(&path).unwrap(), malformed);
+        }
+        let oversized = std::fs::File::create(&path).unwrap();
+        oversized.set_len((32 << 20) + 1).unwrap();
+        drop(oversized);
+        assert_eq!(packs.translate(|| build, guest, |_| Ok(valid_shader())).unwrap().dxil, valid_shader().dxil);
+        assert_eq!(packs.stats[8].load(Ordering::Relaxed), 4);
+        // A readable publication becomes available in the same process.
+        std::fs::write(&path, valid).unwrap();
+        assert_eq!(packs.translate(|| build, guest, |_| panic!()).unwrap().dxil, valid_shader().dxil);
+        assert_eq!(packs.stats[5].load(Ordering::Relaxed), 2);
     }
 
     #[test]

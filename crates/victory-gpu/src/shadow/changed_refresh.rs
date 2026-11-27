@@ -77,8 +77,8 @@ fn replace_reference(
 }
 
 /// The staging mirror is host-mapped write-back memory. Both slices have
-/// already been read or initialized by the normal guarded path. Skip equal
-/// coarse blocks in bulk, then locate the same 256-byte runs as before.
+/// already been read or initialized by the normal guarded path. Skip the
+/// verified prefix to locate each changed 256-byte block in one forward scan.
 /// Keep the coarse mask during the first pass so fragmentation never
 /// requires rescanning the entire buffer.
 pub(super) fn replace_fast(
@@ -97,17 +97,21 @@ pub(super) fn replace_fast(
         .zip(held.chunks(COARSE_BLOCK))
         .enumerate()
     {
-        if equal_bulk(new, old) {
-            continue;
-        }
-        dirty_groups |= 1u64 << group;
-        if coarse {
-            continue;
-        }
         let base = group * COARSE_BLOCK;
-        for (i, (n, o)) in new.chunks(BLOCK).zip(old.chunks(BLOCK)).enumerate() {
-            let at = base + i * BLOCK;
-            if n != o && !append_run(&mut runs, &mut count, at..at + n.len()) {
+        let mut cursor = 0;
+        while cursor < new.len() {
+            let same = equal_prefix(&new[cursor..], &old[cursor..]);
+            if same == new.len() - cursor {
+                break;
+            }
+            dirty_groups |= 1u64 << group;
+            if coarse {
+                break;
+            }
+            // The first unequal byte falls in this publication block.
+            let first = cursor + same / BLOCK * BLOCK;
+            cursor = (first + BLOCK).min(new.len());
+            if !append_run(&mut runs, &mut count, base + first..base + cursor) {
                 coarse = true;
                 break;
             }
@@ -145,8 +149,10 @@ fn append_run(runs: &mut [Range<usize>], count: &mut usize, range: Range<usize>)
     true
 }
 
+/// Returns the length when all bytes match, or a position within the first
+/// different 256-byte block. The caller can skip every complete block before it.
 #[cfg(target_arch = "x86_64")]
-fn equal_bulk(a: &[u8], b: &[u8]) -> bool {
+fn equal_prefix(a: &[u8], b: &[u8]) -> usize {
     use std::arch::x86_64::*;
     debug_assert_eq!(a.len(), b.len());
     let mut at = 0;
@@ -164,16 +170,21 @@ fn equal_bulk(a: &[u8], b: &[u8]) -> bool {
             _mm_movemask_epi8(_mm_cmpeq_epi8(different, _mm_setzero_si128()))
         };
         if mask != 0xffff {
-            return false;
+            return at;
         }
         at += 128;
     }
-    a[at..] == b[at..]
+    if a[at..] == b[at..] { a.len() } else { at }
 }
 
 #[cfg(not(target_arch = "x86_64"))]
-fn equal_bulk(a: &[u8], b: &[u8]) -> bool {
-    a == b
+fn equal_prefix(a: &[u8], b: &[u8]) -> usize {
+    for (i, (lhs, rhs)) in a.chunks(BLOCK).zip(b.chunks(BLOCK)).enumerate() {
+        if lhs != rhs {
+            return i * BLOCK;
+        }
+    }
+    a.len()
 }
 
 fn differences(
@@ -201,18 +212,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bulk_equality_checks_every_lane_and_tail_without_reading_outside_the_slice() {
+    fn equal_prefix_locates_the_changed_block_for_each_lane_and_tail() {
         let source: Vec<_> = (0..777).map(|n| (n * 31) as u8).collect();
         let mut held = source.clone();
         for (start, len) in [(0, 0), (1, 17), (3, 127), (7, 128), (15, 129), (5, 515)] {
             let end = start + len;
-            assert!(equal_bulk(&source[start..end], &held[start..end]));
+            assert_eq!(equal_prefix(&source[start..end], &held[start..end]), len);
             held[end] ^= 4;
-            assert!(equal_bulk(&source[start..end], &held[start..end]));
+            assert_eq!(equal_prefix(&source[start..end], &held[start..end]), len);
             held[end] ^= 4;
             for i in start..end {
                 held[i] ^= 0x80;
-                assert!(!equal_bulk(&source[start..end], &held[start..end]));
+                assert_eq!(equal_prefix(&source[start..end], &held[start..end]) / BLOCK, (i - start) / BLOCK);
                 held[i] ^= 0x80;
             }
         }

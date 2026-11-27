@@ -12,7 +12,8 @@ use std::path::Path;
 const USAGE: &str = "victory-prepare-shaders extract ARCHIVE INPUTS LIMIT\n\
                      victory-prepare-shaders warm INPUTS CACHE\n\
                      victory-prepare-shaders pack INPUTS CACHE NEW.vsp\n\
-                     victory-prepare-shaders verify INPUTS PACK.vsp";
+                     victory-prepare-shaders verify INPUTS PACK.vsp\n\
+                     victory-prepare-shaders identity";
 const MAX_INPUT: usize = 4 << 20;
 const MAX_PACK: usize = 256 << 20;
 const MAX_ENTRIES: usize = 8192;
@@ -139,6 +140,7 @@ fn verify(inputs: &Path, pack: &Path, build: blake3::Hash) -> Result<()> {
     // Only this pack may supply a hit. Offline verification has no recording side effects.
     for name in [
         "VICTORY_READONLY_SHADER_OVERLAY",
+        "VICTORY_READONLY_SHADER_STORE",
         "VICTORY_SHADER_MISSES_DIR",
         "VICTORY_SHADER_REFUSAL_FILE",
     ] {
@@ -248,6 +250,7 @@ fn main() -> Result<()> {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     match args.as_slice() {
         [cmd] if cmd == "--help" || cmd == "-h" => println!("{USAGE}"),
+        [cmd] if cmd == "identity" => println!("{}", build_key()?),
         [cmd, archive, inputs, limit] if cmd == "extract" => extract(
             archive.as_ref(),
             inputs.as_ref(),

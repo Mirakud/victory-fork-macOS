@@ -1552,6 +1552,38 @@ mod tests {
         assert_eq!(state.masked_rgb_channels_for_source_alpha(), None);
     }
 
+    #[cfg(feature = "diagnostics")]
+    #[test]
+    #[ignore = "requires external mesh and pixel shaders and a D3D12 mesh device"]
+    fn replay_character_varyings() {
+        use crate::pipeline::{mesh_budget, shader};
+
+        let dir = PathBuf::from(std::env::var_os("VICTORY_REPLAY_SHADER_DIR").unwrap());
+        let load = |stage, var| {
+            let hash = std::env::var(var).unwrap();
+            let bytes = std::fs::read(dir.join(format!("{hash}.{stage}.cdxil"))).unwrap();
+            let result = shader(stage, &bytes);
+            assert_eq!(result.hash, hash);
+            result
+        };
+        let pair = [load("mesh", "VICTORY_REPLAY_MESH"), load("pixel", "VICTORY_REPLAY_PIXEL")];
+        let enabled = std::env::var("VICTORY_REPACK_METAL_MESH_VARYINGS").unwrap();
+        assert_eq!(mesh_budget::repack_refused_metal_pair(&pair[0], &pair[1]).is_some(), enabled == "1");
+        let mut state = GraphicsState {
+            topology: D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
+            depth_format: DXGI_FORMAT_D32_FLOAT_S8X24_UINT,
+            ..Default::default()
+        };
+        state.targets.NumRenderTargets = 6;
+        state.targets.RTFormats[..6].copy_from_slice(&[
+            DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, DXGI_FORMAT_R8G8B8A8_UNORM,
+            DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM,
+            DXGI_FORMAT_R16G16_FLOAT, DXGI_FORMAT_R8G8B8A8_UNORM,
+        ]);
+        assert!(HostPipeline::new(&pair, Some(&state)).expect("mesh PSO").mesh);
+        // D3DMetal can return this object but report a no-op in its log.
+    }
+
     /// A triangle mesh shader of our own and a pixel shader for it.
     const MS: &str = "struct V { float4 p : SV_Position; };
         [outputtopology(\"triangle\")] [numthreads(1, 1, 1)]

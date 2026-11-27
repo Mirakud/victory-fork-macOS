@@ -178,6 +178,7 @@ pub fn check(path: &str, content: &[u8]) -> Vec<String> {
             | "docs/macos/011924-frame-2410.png"
             | "docs/macos/011924-frame-2518.png"
             | "docs/macos/011924-frame-2542.png"
+            | "docs/macos/visage-et-cou-macos.png"
     );
     if (reviewed_capture && content.len() <= MAX_FILE_SIZE || retina_capture && content.len() <= 5 * 1024 * 1024)
         && content.starts_with(b"\x89PNG\r\n\x1a\n")
@@ -185,9 +186,14 @@ pub fn check(path: &str, content: &[u8]) -> Vec<String> {
     {
         return problems;
     }
+    if path == "docs/macos/cou-en-jeu-avant-apres.jpg" && content.len() <= MAX_FILE_SIZE
+        && content.starts_with(&[0xff, 0xd8, 0xff]) && content.ends_with(&[0xff, 0xd9])
+    {
+        return problems;
+    }
     let mac_tool = (path.starts_with("tools/macos/") || path.starts_with("tools/shaders/"))
         && ext.as_deref() == Some("py");
-    let allowed = path == "tools/run_victory_d3dmetal4_mac.command"
+    let allowed = matches!(path, "tools/run_victory_d3dmetal4_mac.command" | "tools/run_victory_prison_avec_hud_mac.command")
         || path == "tools/macos/victory_perf_hud.swift"
         || mac_tool
         || ALLOWED_NAMES.contains(&name)

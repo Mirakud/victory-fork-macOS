@@ -4,6 +4,8 @@
 //! size. Only in builds with diagnostics.
 
 mod cadence;
+pub(crate) mod mesh_args;
+mod request;
 pub(crate) mod planes;
 
 use std::path::PathBuf;
@@ -75,7 +77,8 @@ pub(crate) fn first_indirect() {
     }
 }
 
-/// With a capture folder, for the frames [`listed`]: `what` is added to
+/// With a capture folder, for the frames [`listed`] or a target frame
+/// requested with `VICTORY_CAPTURE_TARGET_COMMANDS=1`: `what` is added to
 /// the frame's `frame-<n>-ops.txt`, one line per draw, dispatch, copy or
 /// drop in the order recorded (the title records on several threads, so
 /// lines of different lists interleave; each names its list). The file
@@ -88,7 +91,10 @@ pub(crate) fn op(list: usize, what: impl FnOnce() -> String) {
     let first_indirect = FIRST_INDIRECT_FRAME.load(Ordering::Relaxed);
     let trace_indirect = first_indirect != u64::MAX
         && frame.wrapping_sub(first_indirect) < *INDIRECT_FRAMES;
-    if !trace_indirect && !listed(frame) {
+    static TARGET_COMMANDS: LazyLock<bool> = LazyLock::new(|| {
+        std::env::var_os("VICTORY_CAPTURE_TARGET_COMMANDS").is_some_and(|value| value == "1")
+    });
+    if !trace_indirect && !listed(frame) && !(*TARGET_COMMANDS && target_frame(frame)) {
         // Before the world: the last lines are kept, and written out when
         // it starts (`before-world-ops.txt`): what the title drew just
         // before (the title shows a title card there, whose text
@@ -191,7 +197,7 @@ pub(crate) fn wanted(n: u64) -> bool {
     let first = WORLD.load(Ordering::Relaxed);
     let loading = world_on() && !world_only() && first == u64::MAX && n.is_multiple_of(16);
     let regular = !WORLD_CADENCE.png_only && (n.is_power_of_two() || loading);
-    regular || listed(n) || world_on() && WORLD_CADENCE.scheduled(n, first) || capture_requested(n)
+    regular || target_frame(n) || listed(n) || world_on() && WORLD_CADENCE.scheduled(n, first) || capture_requested(n)
 }
 
 /// Separate input planes are only recorded with the opt-in on an already requested world PNG.
@@ -389,8 +395,8 @@ pub(crate) fn save_read_back(
         if buffer.Map(0, None, Some(&mut data)).is_err() {
             return;
         }
-        let len = f.RowPitch as usize * f.Height as usize;
-        let rows = std::slice::from_raw_parts(data.cast::<u8>(), len);
+        // The last row of the footprint can end before its row padding.
+        let rows = std::slice::from_raw_parts(data.cast::<u8>(), buffer.GetDesc().Width as usize);
         save(frame, f.Width, f.Height, f.RowPitch as usize, bgra, rows);
         buffer.Unmap(0, None);
     }
@@ -577,31 +583,78 @@ fn rgba_differences(width: usize, pitch: usize, before: &[u8], after: &[u8]) -> 
 /// structure: floats scaled by their largest value, depth by its range).
 /// The host copies are held: the title may release a target before the
 /// frame is presented.
-static TARGETS: std::sync::Mutex<Vec<(usize, std::sync::Arc<crate::resource::HostTexture>)>> =
-    std::sync::Mutex::new(Vec::new());
+type HeldTargets = Vec<(usize, std::sync::Arc<crate::resource::HostTexture>)>;
+static TARGETS: std::sync::Mutex<std::collections::BTreeMap<u64, HeldTargets>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+static TARGET_REQUEST: LazyLock<Option<request::TargetRequest>> = LazyLock::new(|| {
+    folder()?;
+    let path = std::env::var_os("VICTORY_CAPTURE_TARGETS_FILE")?;
+    Some(request::TargetRequest::new(path.into()))
+});
+
+pub(crate) fn target_frame(frame: u64) -> bool {
+    TARGET_REQUEST.as_ref().is_some_and(|r| r.selects(frame))
+}
+
+/// With VICTORY_CAPTURE_TARGETS_FILE, touching that path requests a deferred
+/// geometry buffer capture plus its matching composited PNG on a full frame.
+pub(crate) fn poll_targets(finished: u64) {
+    if let Some(frame) = TARGET_REQUEST.as_ref().and_then(|r| r.after_present(finished, crate::queue::presented)) {
+        tracing::info!(frame, "armed deferred render target capture");
+    }
+}
 
 fn dump_on() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| folder().is_some() && std::env::var_os("VICTORY_DUMP_TARGETS").is_some())
 }
 
-/// Notes a title texture the frame being built renders to or writes.
-pub(crate) fn note_target(resource: crate::object::This) {
-    if resource.is_null() || !dump_on() || !listed(crate::queue::presented() + 1) {
+fn hold_targets(frame: u64, resources: impl Iterator<Item = usize>) {
+    let mut pending = TARGETS.lock().unwrap_or_else(|e| e.into_inner());
+    // The recording thread may have crossed a present while taking the lock.
+    if crate::queue::presented() >= frame {
         return;
     }
-    let mut targets = TARGETS.lock().unwrap_or_else(|e| e.into_inner());
-    if !targets.iter().any(|&(r, _)| r == resource as usize)
-        && let Some(copy) = crate::resource::host_copy(resource)
-    {
-        targets.push((resource as usize, copy));
+    let targets = pending.entry(frame).or_default();
+    for resource in resources {
+        if !targets.iter().any(|&(id, _)| id == resource)
+            && let Some(copy) = crate::resource::host_copy(resource as crate::object::This)
+        {
+            targets.push((resource, copy));
+        }
     }
 }
 
-/// At the present of frame `frame`: saves the noted targets.
+/// Notes a title texture the explicitly listed frame renders to or writes.
+pub(crate) fn note_target(resource: crate::object::This) {
+    if !resource.is_null() && dump_on() {
+        let frame = crate::queue::presented() + 1;
+        if listed(frame) {
+            hold_targets(frame, std::iter::once(resource as usize));
+        }
+    }
+}
+
+/// The character G-buffer binds six color textures with a depth target. Capture
+/// that layout on demand without reading back every shadow, UAV or post effect.
+pub(crate) fn note_deferred_targets(colours: &[usize], depth: usize) {
+    if colours.len() < 5 || depth == 0 {
+        return;
+    }
+    let frame = crate::queue::presented() + 1;
+    if target_frame(frame) {
+        hold_targets(frame, colours.iter().copied().chain(std::iter::once(depth)));
+    }
+}
+
+/// At the present of frame `frame`: saves only the targets noted for that frame.
 pub(crate) fn dump_targets(frame: u64) {
     use std::sync::atomic::Ordering::Relaxed;
-    let targets = std::mem::take(&mut *TARGETS.lock().unwrap_or_else(|e| e.into_inner()));
+    let targets = TARGETS.lock().unwrap_or_else(|e| e.into_inner()).remove(&frame).unwrap_or_default();
+    if target_frame(frame) {
+        tracing::info!(frame, count = targets.len(), "reading deferred render targets");
+    }
     let Some(host) = crate::host::host() else { return };
     for (i, (resource, copy)) in targets.iter().enumerate() {
         let texture = &copy.texture;
@@ -665,7 +718,8 @@ fn dump_one(
             return;
         }
         let pitch = f.RowPitch as usize;
-        let rows = std::slice::from_raw_parts(data.cast::<u8>(), pitch * f.Height as usize);
+        // The last row of the footprint can end before its row padding.
+        let rows = std::slice::from_raw_parts(data.cast::<u8>(), buffer.GetDesc().Width as usize);
         // A 24-bit depth plane comes back as 32-bit words: which depth values
         // (low 24 bits) and which top bytes it holds, the most common first.
         if matches!(d.Format.0, 44..=47) {

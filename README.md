@@ -10,9 +10,17 @@
 
 Sur la capture du menu, la fenêtre indique 5 FPS, 197,2 ms par image et 64 appels de dessin.
 
-Victory traduit les appels d’un titre Xbox Series vers Direct3D 12. Le 27 novembre 2026, Mirakud a franchi la cinématique puis déplacé le personnage dans la prison avec le profil Series S, Wine Sikarugir et D3DMetal 4.0 bêta 3. La capture indique 1 751,9 ms par image et 4 514 dessins par image. Une partie du visage et du cou manque à l’écran.
+Victory traduit les appels d’un titre Xbox Series vers Direct3D 12. Le 27 novembre 2026, Mirakud a franchi la cinématique puis déplacé le personnage dans la prison avec le profil Series S, Wine Sikarugir et D3DMetal 4.0 bêta 3. La capture indique 1 751,9 ms par image et 4 514 dessins par image. Sur cette première version, le visage et le cou apparaissent par fragments.
 
 Le lanceur local `tools/run_victory_d3dmetal4_mac.command` a sélectionné le moteur `6c32891` et le traducteur historique. Il a chargé 2 319 shaders en 118 ms et 187 traductions complémentaires en 9 ms. Belobug est un profil expérimental distinct. Le moniteur a enregistré 30 min 17 s avant une violation d’accès et une sortie avec le code 5. [Empreintes de la session 030001](docs/macos/030001.json) · [Lancer le profil prison](#démarrer-victory)
+
+## Tête et cou dans la prison sur Mac M3
+
+Le profil **Prison avec HUD** atteint la cour avec le moteur `b2f29fc` et un seul travailleur DirectStorage. Sur la vue de trois quarts, la nuque rejoint le col. En masquant les cheveux, on retrouve le crâne, les deux oreilles et la nuque dans la couleur du matériau et dans la profondeur. Les deux prises de vue ont des angles légèrement différents. [Voir les images de couleur et de profondeur](docs/macos/visage-et-cou-macos.png)
+
+[![Comparaison dans la cour entre la capture d’origine et la version où la nuque rejoint le col](docs/macos/cou-en-jeu-avant-apres.jpg)](docs/macos/cou-en-jeu-avant-apres.jpg)
+
+Le visage reste très sombre à contre-jour. Sur secteur, avec la coiffure rétablie et la caméra immobile, dix images consécutives prennent **2,795 s en médiane**, soit **0,351 image/s** sur la séquence. Le pack expérimental d’ombres en cascades de Belobug était désactivé pendant cette mesure. [Temps de chaque image et empreintes du moteur et des caches](docs/macos/124802-prison.json)
 
 ## Essai 011924 du 27 novembre 2026
 
@@ -89,9 +97,9 @@ Le rapport de 202903 s’arrête à la trame titre 836 avec `INSTANCE_LIST 45000
 
 ## Construire
 
-La source de l’essai 011924 reprend le candidat Victory `6c32891`. Elle inclut la réserve étendue des pools, la réutilisation des vues DirectStorage sous Wine et le cache complémentaire de shaders. Les tests de profondeur proviennent de `95732f4` et `b6bf7c8`. La cadence de capture diagnostique provient de `4541df7`. En mode `VICTORY_CAPTURE_WORLD=only`, `VICTORY_CAPTURE_WORLD_INTERVAL=1` enregistre un PNG à chaque présentation du monde. Les intervalles de 1 à 64 sont acceptés. La recette du candidat mesuré `c949892` reste la référence de 195805 et de 200227. Le README amont conserve le détail des composants, le modèle d’exécution et les instructions du projet. [Documentation amont](README.amont.md) · [Architecture](docs/architecture.md) · [État du ray tracing](docs/fork-ray-tracing.md)
+Le moteur de la cour testé avec le profil Prison avec HUD est issu de `b2f29fc`. Pour l’essai antérieur 011924, le candidat Victory était `6c32891`. Elle inclut la réserve étendue des pools, la réutilisation des vues DirectStorage sous Wine et le cache complémentaire de shaders. Les tests de profondeur proviennent de `95732f4` et `b6bf7c8`. La cadence de capture diagnostique provient de `4541df7`. En mode `VICTORY_CAPTURE_WORLD=only`, `VICTORY_CAPTURE_WORLD_INTERVAL=1` enregistre un PNG à chaque présentation du monde. Les intervalles de 1 à 64 sont acceptés. La recette du candidat mesuré `c949892` reste la référence de 195805 et de 200227. Le README amont conserve le détail des composants, le modèle d’exécution et les instructions du projet. [Documentation amont](README.amont.md) · [Architecture](docs/architecture.md) · [État du ray tracing](docs/fork-ray-tracing.md)
 
-Dans un terminal de développement Windows x64 avec le SDK Windows, Rust MSVC, Python 3 et le DirectX Shader Compiler de Microsoft sur le PATH, lancer les commandes suivantes. Le script compile les deux noyaux HLSL du projet en DXIL local avant que Rust n’embarque leurs octets. Le paramètre `--dxc` accepte un chemin explicite.
+Dans un terminal de développement Windows x64 avec le SDK Windows, Rust MSVC, Python 3 et le DirectX Shader Compiler de Microsoft sur le PATH, lancer les commandes suivantes. Le script compile les noyaux HLSL du projet en DXIL local avant que Rust n’embarque leurs octets. Le paramètre `--dxc` accepte un chemin explicite.
 
 ```powershell
 python tools/shaders/prepare.py
@@ -128,6 +136,21 @@ python3 tools/macos/run.py \
 
 Le raccourci du dépôt `tools/run_victory_d3dmetal4_mac.command` accepte les mêmes chemins et sélectionne directement le profil prison. Avec `run.py`, ajoutez `--prison-profile --data "$VICTORY_DATA"` à cette commande. Avec le raccourci, seul `--data "$VICTORY_DATA"` est à ajouter aux chemins. Pour reproduire le préchauffage, fournissez aussi `--shader-pack "$SHADER_PACK" --shader-overlay "$SHADER_OVERLAY" --pipeline-manifest "$PIPELINE_MANIFEST"` avec vos fichiers locaux compatibles. Ce profil active le panneau Shaders A/B, applique les distances de détail de la session et laisse macOS gérer la RAM. Le moniteur continue à surveiller les erreurs mémoire Metal.
 
+Pour lancer **Prison avec HUD**, utilisez la commande ci-dessous avec le moteur construit depuis cette révision, votre profil et vos caches locaux. Le raccourci active la préparation des textures de peau et le panneau des entrées. Dans la cinématique, maintenez la commande **A** du jeu (croix sur DualSense).
+
+```sh
+./tools/run_victory_prison_avec_hud_mac.command \
+    --victory "$VICTORY_EXE" --title "$TITLE_EXE" \
+    --engine "$SIKARUGIR_ENGINE" --bottle "$VICTORY_BOTTLE" \
+    --output "$RUNS_DIR" --data "$VICTORY_DATA" \
+    --shader-pack "$SHADER_PACK" --shader-overlay "$SHADER_OVERLAY" \
+    --shader-store "$SHADER_STORE" --pipeline-manifest "$PIPELINE_MANIFEST" --preview
+```
+
+Le dossier `SHADER_STORE` contient les traductions privées pour la version du traducteur utilisée. Le traducteur de cette publication et celui du banc local ont des empreintes différentes. Régénérez les packs et le répertoire de traductions avec le préparateur compilé depuis ce dépôt. Le catalogue JSON de noms peut être fourni avec `--shader-names` pour reconnaître davantage de paires dans le panneau. [Construction et vérification des caches](tools/shaders/prepare-arm64/USAGE.md)
+
+Le profil mesuré utilisait une copie de Sikarugir équipée d’un pilote CoreAudio recompilé depuis Wine 10.0. Ce correctif permet aux minuteries des flux audio à l’arrêt de dormir jusqu’à leur reprise. Il s’applique à la racine des sources Wine 10.0 avec `patch -p1 < wine-10.0-coreaudio.diff.txt`. Le pilote conserve la licence LGPL-2.1-or-later. [Correctif source](docs/macos/wine-10.0-coreaudio.diff.txt) · [Licence Wine](docs/macos/wine-LGPL-2.1.txt)
+
 Retirer `--preview` pour exécuter. `--data` copie les données privées d’un profil dans la nouvelle session. Les options `--shader-pack` et `--pipeline-manifest` acceptent des caches et priorités générés localement pour une version compatible. Au choix de profil du jeu, confirmer Player avec Entrée. Chaque session enregistre le journal et la télémétrie. Avec les profils de rue et de cinématique, le moniteur arrête le groupe de processus à 9 216 Mio câblés ou dès l’erreur Metal de mémoire insuffisante. Le lanceur reprend les réglages de base de la rue, tandis que les profils, priorités spécifiques et entrées utilisées lors du développement restent propres aux essais.
 
 Pour reprendre les réglages de 011924, ajoutez `--intro-profile --data "$VICTORY_DATA"` avec votre dossier de profil. Activez `--shader-ab` pour isoler des paires graphiques dans le HUD et `--capture-shader-misses` pour enregistrer les conteneurs manquants dans le sous-dossier `shader-misses` de la session. Au lancement suivant, `--shader-overlay` accepte le fichier VSP1 préparé avec ces traductions. [Préparer et vérifier ses shaders sur Apple Silicon](tools/shaders/prepare-arm64/USAGE.md)
@@ -156,6 +179,14 @@ Sur le démarrage de l’essai 202903, le panneau a reçu **21,14 FPS, 47,3 ms p
 
 Une valeur absente ou périmée s’affiche sous la forme d’un tiret. Les comptes rendus de chaque session sont dans le dossier de sortie choisi. On peut les relire avec `python3 tools/macos/summarize_victory_run.py --help`.
 
+### Examiner le visage avec Shaders A/B
+
+Pour jouer, laissez le panneau replié. Pour examiner un défaut dans la cour, arrêtez la caméra, ouvrez **Shaders A/B**, choisissez **Paires de shaders** et cochez **Dernière image** puis **Personnage**. Choisissez **Visage et cou · peau** et cliquez sur **Masquer** pour voir quelles surfaces disparaissent. **Tout rétablir** ramène le rendu complet. **Isoler** affiche uniquement les dessins associés à la sélection.
+
+Une paire rassemble les shaders de géométrie et de pixels. Un pipeline précise aussi comment effectuer le dessin, par exemple le test de profondeur ou le mélange des couleurs. Plusieurs pipelines peuvent utiliser la même paire. L’onglet **Pipelines** permet de cibler une seule de ces variantes quand le masquage de la paire affecte plusieurs surfaces.
+
+Le panneau **Clavier** montre les touches reçues par Victory. Avec une DualSense détectée, le panneau voisin affiche les symboles PlayStation et le niveau des gâchettes. Le décodage et l’affichage ont été vérifiés sur banc. Un essai avec les boutons physiques de la manette dans la cour reste à confirmer.
+
 ## Crédits et provenance
 
 Cette publication conserve les notices des projets et leur attribue les contributions intégrées. L’historique public de chacun reste accessible aux révisions indiquées.
@@ -167,6 +198,7 @@ Cette publication conserve les notices des projets et leur attribue les contribu
 | victory-amd, myokex et contributeurs | Suivi des écritures à travers les vues d’une même page par myokex, d’après Spexivus, joroyt et tightfall. Lecture dans un tampon temporaire avant copie vers les pages du titre par Joshua Odom. Ces contributions ont été reprises dans la base Windows. [Gardes de page](https://github.com/myokex/victory-amd/commit/c6dc4d8c9fc80e8d2090f94287827cd3ffc0ac95) · [Lecture temporaire](https://github.com/myokex/victory-amd/commit/10ea38ed80e944e052b5f2221eee02b1717eda2b) |
 | triippywhale et asdaasdsaddf | La base Windows a intégré les bornes du tas de vues de triippywhale et des correctifs de traduction des shaders et d’interpolation d’asdaasdsaddf. [Intégration des vues](https://github.com/fxceless/victory-fork/commit/31714deb2d70bb7c5a963658ad0faed0368526c6) · [Intégration des shaders](https://github.com/fxceless/victory-fork/commit/3bff182ef4966ad6986fd8552dc9c7c58268df07) |
 | VIctory-macOS, pragyaangaur et contributeurs | Le diagnostic d’identités DXIL distinctes pour le cache D3DMetal a servi au port de l’identifiant de shader dans notre intégration Mac, conservé dans `crates/victory-shader/src/emit/container.rs`. La sélection des plans de présentation a servi de référence pour diagnostiquer les premiers écrans noirs. Le travail de **Stefa008** sur les conversions des canaux d’un export mesh avant ses écritures a inspiré les adaptations `054aaf5`, `24cbffc` et `8eaafd5`, présentes dans notre candidat. [Contribution de Stefa008](https://github.com/pragyaangaur/VIctory-macOS/pull/167) · [Diagnostic des hashes D3DMetal](https://github.com/pragyaangaur/VIctory-macOS/blob/a76ec9662bce135d90e15d28621da208409eef17/docs/macos.md#d3dmetals-shader-cache-needs-unique-shader-hashes) · [Plans présentés](https://github.com/pragyaangaur/VIctory-macOS/commit/87b6f05e90761cb4ff5f0ab55e546951d51edffd) |
+| Belobug et contributeurs | Le profil expérimental de la cascade accepte la traduction vérifiée d’un shader de calcul issue du fork Belobug. La cour documentée avec le profil Prison avec HUD utilise le traducteur ordinaire. [Source de Belobug à la révision étudiée](https://github.com/Belobug/VIctory-Belobug-AMD/tree/4eb6cfdf9e61cb112f1f811344ec0dd309eddd6c) |
 | XCL, ivall et contributeurs | Référence comparative pour le comportement du titre dans une autre couche de compatibilité. Son dépôt est aujourd’hui sous xcl-dev et sa licence est GPL-2.0-only. [Projet XCL](https://github.com/xcl-dev/xcl) |
 | Mirakud | Intégration et essais sur le M3, parcours et statistiques documentés ici, lanceur macOS, garde mémoire, encart natif et publication des sources. [Banc de profondeur](crates/victory-gpu/src/host/depth_plane_readback.rs) · [Outils macOS](tools/macos) |
 

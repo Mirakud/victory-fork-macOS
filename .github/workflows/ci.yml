@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@v5
       # The version and components pinned in rust-toolchain.toml.
       - run: rustup toolchain install
-      - name: Compile the two project shaders from HLSL
+      - name: Compile project shaders from HLSL
         run: python tools/shaders/prepare.py
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings

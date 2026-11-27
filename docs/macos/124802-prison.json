@@ -1,0 +1,74 @@
+{
+  "session": "20261127-124802",
+  "engine_revision": "b2f29fc02d34b469653baee8c6b1d27a19c1a799",
+  "engine_sha256": "dc6f8daece9332d82367205f9aa8da92a656eb319154f8c886850d191e3748d2",
+  "platform": "Mac M3, 16 Gio, D3DMetal 4.0 bêta 3, sur secteur",
+  "directstorage_workers": 1,
+  "lod_scale": 0.45,
+  "small_cull_threshold": 2.0,
+  "belobug_cascade_pack": false,
+  "shader_pack_sha256": "9d9b6d8f3f1e592b0abd97203ea5d61debc11df10c161a729bd239343fdb97c7",
+  "shader_overlay_sha256": "7b2b50acf8ae0a07c5fa22251a043f470e6af37f156f60a700eee0b839750516",
+  "pipeline_manifest_sha256": "7d12395b27976aefa458ea60e42fd371cefb71c524caed41f9153224189690cc",
+  "hair_visible_frame": 3819,
+  "hair_hidden_frame": 3837,
+  "hair_restored_frame": 3844,
+  "performance_window": {
+    "scene": "Cour de la prison, caméra fixe, coiffure rétablie, rendu complet, sans capture",
+    "frame_and_elapsed_ms": [
+      [
+        3862,
+        3573.328
+      ],
+      [
+        3863,
+        2516.032
+      ],
+      [
+        3864,
+        2928.777
+      ],
+      [
+        3865,
+        2530.326
+      ],
+      [
+        3866,
+        2885.146
+      ],
+      [
+        3867,
+        3086.288
+      ],
+      [
+        3868,
+        2492.355
+      ],
+      [
+        3869,
+        3269.024
+      ],
+      [
+        3870,
+        2704.182
+      ],
+      [
+        3871,
+        2492.045
+      ]
+    ],
+    "median_ms": 2794.664,
+    "presentations_per_second": 0.351154,
+    "render_reports": 5,
+    "report_medians": {
+      "draws": 4832.0,
+      "frame_ms": 2530.6,
+      "copy_ms": 1286.5,
+      "copy_mb": 8770.7,
+      "gpu_ms": 875.9,
+      "back_ms": 163.7,
+      "texture_ms": 229.0
+    }
+  },
+  "winecoreaudio_sha256": "3df58a5be8dca03a897280b9863d5ab340f3183cb40d49c7ec14e7d65d4857d6"
+}

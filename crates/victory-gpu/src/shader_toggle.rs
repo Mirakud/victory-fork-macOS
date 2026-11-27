@@ -5,6 +5,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
@@ -159,6 +160,22 @@ impl Counts {
 
 pub(crate) type ListCounts = BTreeMap<GraphicsId, Counts>;
 
+/// Owned by the list's draw state until that particular native list closes.
+#[derive(Default)]
+pub(crate) struct Recording(ListCounts);
+
+impl Recording {
+    pub(crate) fn record(&mut self, id: GraphicsId) -> bool {
+        let allowed = permits(id);
+        self.0.entry(id).or_default().record(allowed);
+        allowed
+    }
+
+    pub(crate) fn take(&mut self) -> Option<ListCounts> {
+        (!self.0.is_empty()).then(|| std::mem::take(&mut self.0))
+    }
+}
+
 #[derive(Default)]
 struct Report {
     total: Counts,
@@ -249,6 +266,7 @@ impl Session {
 
 struct Runtime {
     control: PathBuf,
+    filtering: AtomicBool,
     session: Mutex<Session>,
     publication: Mutex<(u64, Option<Instant>, bool)>,
 }
@@ -258,6 +276,7 @@ static RUNTIME: LazyLock<Option<Runtime>> = LazyLock::new(|| {
         .filter(|s| !s.is_empty())
         .map(|path| Runtime {
             control: PathBuf::from(path),
+            filtering: AtomicBool::new(false),
             session: Mutex::default(),
             publication: Mutex::default(),
         })
@@ -269,11 +288,8 @@ pub(crate) fn enabled() -> bool {
 
 pub(crate) fn permits(id: GraphicsId) -> bool {
     RUNTIME.as_ref().is_none_or(|r| {
-        r.session
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .control
-            .permits(id)
+        !r.filtering.load(Ordering::Acquire)
+            || r.session.lock().unwrap_or_else(|e| e.into_inner()).control.permits(id)
     })
 }
 
@@ -317,6 +333,9 @@ pub(crate) fn frame(frame: u64) {
     let command = request(&r.control);
     let mut session = r.session.lock().unwrap_or_else(|e| e.into_inner());
     let changed = session.apply(command);
+    if changed {
+        r.filtering.store(session.control.targets != Targets::None, Ordering::Release);
+    }
     let mut counts = Counts::default();
     for row in session.timelines.values() {
         counts.add(row.frame);
@@ -427,6 +446,22 @@ mod tests {
         session.apply(Request::Missing);
         assert!(session.control.permits(A));
         assert_eq!(session.error, "");
+    }
+
+    #[test]
+    fn closing_a_split_list_detaches_counts_for_each_part_and_its_replays() {
+        let mut recording = Recording::default();
+        assert!(recording.record(A));
+        let first = recording.take().unwrap();
+        assert!(recording.take().is_none());
+        assert!(recording.record(B));
+        let second = recording.take().unwrap();
+        let mut session = Session::default();
+        session.submit(&first);
+        session.submit(&second);
+        session.submit(&first);
+        assert_eq!(session.timelines[&A].total.drawn, 2);
+        assert_eq!(session.timelines[&B].total.drawn, 1);
     }
 
     #[test]

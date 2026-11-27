@@ -1,5 +1,6 @@
 //! `gameinput.dll`: input devices from the host. Gamepads come from XInput
-//! (host slots 0-3); while none is connected, the keyboard drives one
+//! (host slots 0-3), with a WinMM fallback for Sony DualSense on Wine.
+//! While none is connected, the keyboard drives one
 //! stand-in gamepad (`FALLBACK_BUTTONS`). The keyboard is a device of its own
 //! too. A poll thread turns host state into readings (a new one per change)
 //! and runs device callbacks on connect and disconnect.
@@ -111,6 +112,9 @@ const _: () = assert!(size_of::<KeyState>() == 12 && size_of::<PadState>() == 28
 trait Source: Send {
     /// The pad in host slot `slot`, `None` when the slot is empty.
     fn pad(&mut self, slot: usize) -> Option<PadState>;
+    fn pads(&mut self) -> [Option<PadState>; PADS] {
+        std::array::from_fn(|slot| self.pad(slot))
+    }
     /// Keys held down; none while the title's window lacks focus.
     fn keys(&mut self) -> Vec<KeyState>;
     /// Motor speeds: low frequency (left), high frequency (right).
@@ -118,13 +122,11 @@ trait Source: Send {
 }
 
 fn fallback(keys: &[KeyState]) -> PadState {
-    let on = |vk: u8| {
-        if keys.iter().any(|k| k.virtual_key == vk) {
-            1.0
-        } else {
-            0.0
-        }
-    };
+    fallback_buttons(|vk| keys.iter().any(|key| key.virtual_key == vk))
+}
+
+fn fallback_buttons(held: impl Fn(u8) -> bool) -> PadState {
+    let on = |vk| if held(vk) { 1.0 } else { 0.0 };
     PadState {
         buttons: FALLBACK_BUTTONS
             .iter()
@@ -405,7 +407,7 @@ impl Hub {
     fn poll(&self) {
         let (pads, keys) = {
             let mut source = lock(&self.source);
-            let pads: [_; PADS] = std::array::from_fn(|slot| source.pad(slot));
+            let pads = source.pads();
             (pads, source.keys())
         };
         let events = self.state().poll(&self.devices, pads, keys);
@@ -1079,6 +1081,11 @@ pub(crate) fn module() -> HleModule {
     }
 }
 
+#[cfg(windows)]
+mod dualsense;
+#[cfg(any(windows, test))]
+mod input_hud;
+
 /// Host input: XInput pads, the keyboard while our process has focus.
 #[cfg(windows)]
 mod host {
@@ -1142,6 +1149,8 @@ mod host {
     #[derive(Default)]
     pub(super) struct Host {
         empty_until: [Option<Instant>; PADS],
+        dualsense: super::dualsense::Reader,
+        hud: input_hud::InputHud,
     }
 
     impl Source for Host {
@@ -1156,21 +1165,29 @@ mod host {
                 return None;
             }
             self.empty_until[slot] = None;
-            #[allow(unused_mut)]
-            let mut pad = convert(&state.Gamepad);
-            // The scripted keys (`VICTORY_KEYS`) also press the first
-            // pad's buttons, by the stand-in pad's table: with a real pad
-            // connected the stand-in is not there, and a title that listens
-            // to the pad (the title's start screen) saw nothing.
+            Some(convert(&state.Gamepad))
+        }
+
+        fn pads(&mut self) -> [Option<PadState>; PADS] {
+            let mut pads = std::array::from_fn(|slot| self.pad(slot));
+            // Wine can expose the Sony HID to WinMM without assigning it an XInput slot.
+            // Prefer its ordinary XInput mapping when a controller driver provides one.
+            let physical_pad = if let Some(pad) = pads.iter().flatten().next() {
+                Some(("xinput", *pad))
+            } else {
+                pads[0] = self.dualsense.read();
+                pads[0].map(|pad| ("dualsense", pad))
+            };
+            self.hud.pad = physical_pad;
             #[cfg(feature = "diagnostics")]
-            if slot == 0 {
+            if let Some(pad) = pads[0].as_mut() {
                 for vk in scripted() {
                     if let Some(&(_, button)) = super::FALLBACK_BUTTONS.iter().find(|(key, _)| *key == vk) {
                         pad.buttons |= button;
                     }
                 }
             }
-            Some(pad)
+            pads
         }
 
         fn keys(&mut self) -> Vec<KeyState> {
@@ -1178,15 +1195,25 @@ mod host {
             let mut down = scripted();
             #[cfg(not(feature = "diagnostics"))]
             let mut down = Vec::new();
-            if focused() {
+            let focus = focused();
+            let mut held = Vec::new();
+            if focus {
                 // Left/right modifier keys only, as devices report them; no
                 // mouse buttons (below 0x08).
-                let held: Vec<u8> = (0x08..=0xFE_u8)
-                    .filter(|vk| !(0x10..=0x12).contains(vk) && !down.contains(vk))
+                held.extend((0x08..=0xFE_u8)
+                    .filter(|vk| !(0x10..=0x12).contains(vk))
                     // SAFETY: plain queries.
-                    .filter(|&vk| unsafe { GetAsyncKeyState(i32::from(vk)) } < 0)
-                    .collect();
-                down.extend(held);
+                    .filter(|&vk| unsafe { GetAsyncKeyState(i32::from(vk)) } < 0));
+            }
+            self.hud.publish(focus, &held);
+            if down.is_empty() {
+                down = held;
+            } else {
+                for vk in held {
+                    if !down.contains(&vk) {
+                        down.push(vk);
+                    }
+                }
             }
             down.into_iter()
                 .map(|vk| KeyState {

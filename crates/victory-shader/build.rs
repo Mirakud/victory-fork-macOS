@@ -32,7 +32,8 @@ fn fnv(state: &mut [u64; 2], bytes: &[u8]) {
 }
 
 fn main() {
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    // Cargo may reuse the compiled build script across worktrees.
+    let src = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("crate directory")).join("src");
     println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=Cargo.toml");
     let mut list = Vec::new();

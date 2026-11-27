@@ -3174,6 +3174,135 @@ mod tests {
         assert_eq!(t, u64::MAX, "no second subresource");
     }
 
+    /// Run alone with VICTORY_CAPTURE and VICTORY_CAPTURE_TARGETS_FILE in a
+    /// fresh directory. This exercises target readback without opening a window.
+    #[cfg(all(windows, feature = "diagnostics"))]
+    #[test]
+    #[ignore = "requires a D3D12 device and an isolated capture folder"]
+    fn requested_gbuffer_survives_release_until_its_presentation() {
+        use crate::capture;
+        let folder = capture::folder().expect("capture directory");
+        let request = std::env::var_os("VICTORY_CAPTURE_TARGETS_FILE").unwrap();
+        let host = crate::host::host().expect("D3D12 device");
+        assert_eq!(crate::queue::presented(), 0);
+        let null = std::ptr::null();
+        let mut queue = null;
+        let queue_iid = guid(0x0ec870a6, 0x5d7e, 0x4c22, [0x8c, 0xfc, 0x5b, 0xaa, 0xe0, 0x76, 0x16, 0xed]);
+        let desc = [0u32; 4];
+        assert_eq!(crate::queue::create(null, desc.as_ptr().cast(), &queue_iid, &mut queue), S_OK);
+        type Present = extern "system" fn(This, u32, *const crate::queue::Plane, *const u8) -> HRESULT;
+        let present = slot::<Present>(queue, if crate::device::newer() { 32 * 8 } else { 30 * 8 });
+        let finish = || assert_eq!(present(queue, 0, null.cast(), null.cast()), S_OK);
+
+        std::fs::write(request, b"").unwrap();
+        finish();
+        assert!(!capture::target_frame(2));
+        capture::op(0x123, || "before request".to_owned());
+        finish();
+        assert!(capture::target_frame(3));
+        assert!(capture::wanted(3));
+        capture::op(0x123, || "requested operation".to_owned());
+        let mut colours = Vec::new();
+        for _ in 0..6 {
+            let mut image = null;
+            assert_eq!(create_committed(null, &PROPERTIES, 0, &texture(8, 8, 28, 1), 0,
+                                        null.cast(), &RESOURCE_IIDS[0], &mut image), S_OK);
+            colours.push(image as usize);
+        }
+        let depth = colours.pop().unwrap();
+        capture::note_deferred_targets(&colours[..2], depth);
+        capture::note_deferred_targets(&colours, depth);
+        capture::note_deferred_targets(&colours, depth);
+        // Exercise the final color readback off screen using the same save
+        // path as Host::present, without creating a visible swap chain.
+        let list = host.new_list().unwrap();
+        let mesh_enabled = std::env::var_os("VICTORY_CAPTURE_MESH_ARGS").is_some_and(|v| v == "1")
+            && std::env::var_os("VICTORY_CAPTURE_TARGET_COMMANDS").is_some_and(|v| v == "1");
+        assert!(!capture::mesh_args::requested(2));
+        assert_eq!(capture::mesh_args::requested(3), mesh_enabled);
+        let args_dump = folder.join("frame-3-mesh-args.tsv");
+        let scratch = host.uav_buffer(64).unwrap();
+        let (upload, mapped) = host.upload_buffer(24).unwrap();
+        let words: [u32; 6] = [51, 2, 1, 7, 0, 3];
+        // SAFETY: the mapped upload buffer spans all 24 initialized bytes.
+        unsafe { std::ptr::copy_nonoverlapping(words.as_ptr().cast::<u8>(), mapped, 24) };
+        let list_id = list.trace_id();
+        if mesh_enabled {
+            use windows::Win32::Graphics::Direct3D12::*;
+            let mut state = D3D12_RESOURCE_STATE_COMMON;
+            for i in 0..2_u64 {
+                // Reuse the same nonzero offset: an end-of-list copy would return the
+                // second triple for both commands. The upload and scratch outlive execution.
+                unsafe {
+                    list.list.ResourceBarrier(&[crate::host::transition(&scratch, state, D3D12_RESOURCE_STATE_COPY_DEST)]);
+                    list.list.CopyBufferRegion(&scratch, 16, &upload, i * 12, 12);
+                    state = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+                    list.list.ResourceBarrier(&[crate::host::transition(&scratch, D3D12_RESOURCE_STATE_COPY_DEST, state)]);
+                }
+                let command = capture::mesh_args::reserve(3).unwrap();
+                let guest = 0x1400 + i * 12;
+                list.note_op(|| format!("fixture at {guest:#x} mesh_args_frame=3 mesh_args_id={}", command.id));
+                let source = capture::mesh_args::Source {
+                    command, guest, shadow: 77,
+                    // SAFETY: both live resources are buffers and these offsets are in range.
+                    source_gpu: unsafe { upload.GetGPUVirtualAddress() } + i * 12,
+                    bounded_gpu: unsafe { scratch.GetGPUVirtualAddress() } + 16,
+                    count_guest: (i != 0).then_some(0x2000), pipeline: "test pair".to_owned(),
+                };
+                assert!(list.record_target_mesh_args(&scratch, 16, source));
+            }
+        }
+        assert!(!args_dump.exists());
+        let source = host_resource(colours[0] as This).unwrap();
+        let (buffer, footprint) = capture::read_back(&host.device, &list.list, source).unwrap();
+        list.close();
+        host.execute(&[&list]);
+        if mesh_enabled {
+            // Closed lists can be submitted again; the recorded command IDs remain unique.
+            host.execute(&[&list]);
+            let data = std::fs::read_to_string(&args_dump).unwrap();
+            let lines: Vec<_> = data.lines().skip(1).map(|line| line.split('\t').collect::<Vec<_>>()).collect();
+            assert_eq!(lines.len(), 2);
+            let operations = std::fs::read_to_string(folder.join("frame-3-ops.txt")).unwrap();
+            for (i, row) in lines.iter().enumerate() {
+                let guest = 0x1400 + i * 12;
+                assert_eq!(row[1], format!("{list_id:#x}"));
+                assert_eq!(row[2], format!("{guest:#x}"));
+                assert_eq!(row[3], "77");
+                assert_eq!(row[4], format!("{:#x}", unsafe { upload.GetGPUVirtualAddress() } + i as u64 * 12));
+                assert_eq!(row[5], format!("{:#x}", unsafe { scratch.GetGPUVirtualAddress() } + 16));
+                assert_eq!(row[6], ["-", "0x2000"][i]);
+                assert_eq!(&row[7..10], if i == 0 { ["51","2","1"] } else { ["7","0","3"] });
+                assert_eq!(row[10], "test pair");
+                assert!(operations.contains(&format!("list {list_id:#x} fixture at {guest:#x} mesh_args_frame=3 mesh_args_id={}", row[0])));
+            }
+        } else {
+            assert!(!args_dump.exists());
+        }
+        assert!(!folder.join("frame-2-mesh-args.tsv").exists() && !folder.join("frame-4-mesh-args.tsv").exists());
+        capture::save_read_back(3, &buffer, &footprint);
+        for id in colours.into_iter().chain([depth]) {
+            assert_eq!(slot::<Release>(id as This, 0x10)(id as This), 0);
+        }
+        finish();
+        assert!(!capture::target_frame(3));
+        capture::op(0x123, || "after request".to_owned());
+        let ops = folder.join("frame-3-ops.txt");
+        if std::env::var_os("VICTORY_CAPTURE_TARGET_COMMANDS").is_some_and(|v| v == "1") {
+            let text = std::fs::read_to_string(ops).unwrap();
+            assert!(text.contains("list 0x123 requested operation"));
+            assert!(!text.contains("before request") && !text.contains("after request"));
+        } else {
+            assert!(!ops.exists());
+        }
+        assert!(!folder.join("frame-2-ops.txt").exists());
+        assert!(!folder.join("frame-4-ops.txt").exists());
+        let names = std::fs::read_dir(folder).unwrap().map(|e| e.unwrap().file_name()).collect::<Vec<_>>();
+        assert!(folder.join("frame-3.png").is_file());
+        assert_eq!(names.iter().filter(|n| n.to_string_lossy().starts_with("frame-3-") && n.to_string_lossy().ends_with(".png")).count(), 6);
+        assert_eq!(slot::<Release>(queue, 0x10)(queue), 0);
+    }
+
     /// A 4x4 texture filled from a title buffer through our list and queue,
     /// then read back from the host GPU.
     #[cfg(windows)]

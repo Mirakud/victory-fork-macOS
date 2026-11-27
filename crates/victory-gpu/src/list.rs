@@ -392,7 +392,7 @@ fn cut(this: This, wait: ValueWait) {
         list.gate.push(wait);
         return;
     };
-    current.close();
+    close_recording(current, &list.state);
     static CUTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     if CUTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 4 {
         tracing::info!(parts = list.earlier.len() + 2, "a list is cut at a wait for a memory value");
@@ -428,7 +428,7 @@ fn cut_after_work(
     if !prepare_next(current, &fresh) {
         return false;
     }
-    current.close();
+    close_recording(current, &list.state);
     if let Some(done) = slot.replace(fresh) {
         let waits = std::mem::take(&mut list.gate);
         list.earlier.push(Part { waits, host: done });
@@ -988,10 +988,26 @@ extern "system" fn list_type(this: This) -> u32 {
     // SAFETY: `this` is one of our lists.
     unsafe { (*this.cast::<List>()).kind }
 }
+
+/// Counts belong to an individual native list, including either side of a wait.
+#[cfg(windows)]
+fn close_recording(host: &crate::host::HostList, state: &std::sync::Mutex<crate::draw::State>) {
+    #[cfg(feature = "diagnostics")]
+    if crate::shader_toggle::enabled() {
+        let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+        host.seal_shader_counts(&mut state.shader_counts);
+    }
+    #[cfg(not(feature = "diagnostics"))]
+    let _ = state;
+    host.close();
+}
+
 extern "system" fn close(this: This) -> HRESULT {
     #[cfg(windows)]
     if let Some(host) = host_list(this) {
-        host.close();
+        // SAFETY: host_list returned the host side of this live title list.
+        let list = unsafe { &*this.cast::<List>() };
+        close_recording(host, &list.state);
     }
     S_OK
 }

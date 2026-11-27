@@ -1789,6 +1789,18 @@ pub(crate) const CARD_COMPARE: &str = include_str!("host/card_compare.hlsl");
 // Built with: dxc -E main -T cs_6_0 -Fo card_compare.dxil card_compare.hlsl
 const CARD_COMPARE_DXIL: &[u8] = include_bytes!("host/card_compare.dxil");
 
+// Compiled from host/card_compare_parallel.hlsl with dxc -E main -T cs_6_0.
+const CARD_PARALLEL_DXIL: &[u8] = include_bytes!("host/card_compare_parallel.dxil");
+
+fn parallel_card_digest() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_PARALLEL_CARD_DIGEST").is_some_and(|v| v == "1"))
+}
+
+fn card_digest_groups(pieces: u32) -> u32 {
+    if parallel_card_digest() { pieces.min(65535) } else { pieces.div_ceil(64) }
+}
+
 /// Whether the pieces a flight's compare flags come down to the PC inside
 /// the flight itself (`VICTORY_CARD_FETCH_INFLIGHT=1`; off by default, and
 /// only with [`relay`]).
@@ -2069,6 +2081,8 @@ struct Deferred {
     mesh_source: Option<(std::sync::Arc<crate::shadow::Shadow>, u64)>,
     #[cfg(feature = "diagnostics")]
     bounded_mesh_sample: Option<(ID3D12Resource, u64)>,
+    #[cfg(feature = "diagnostics")]
+    target_mesh_args: Vec<(ID3D12Resource, Option<crate::capture::mesh_args::Source>)>,
     #[cfg(feature = "diagnostics")]
     fenced_mesh_target: Option<crate::capture::MeshTargetSample>,
     #[cfg(feature = "diagnostics")]
@@ -3808,6 +3822,20 @@ pub(crate) fn walls_trace() -> bool {
     *ON.get_or_init(|| std::env::var_os("VICTORY_WALLS_TRACE").is_some_and(|v| v == "1" || v == "2"))
 }
 
+#[cfg(feature = "diagnostics")]
+fn read_mesh_args(buffer: &ID3D12Resource) -> windows::core::Result<[u32; 3]> {
+    let range = D3D12_RANGE { Begin: 0, End: 12 };
+    let mut data = std::ptr::null_mut();
+    // SAFETY: callers have retired the list that wrote the 12-byte readback.
+    unsafe {
+        buffer.Map(0, Some(&range), Some(&mut data))?;
+        let words = std::ptr::NonNull::new(data.cast::<[u32; 3]>())
+            .map(|ptr| ptr.as_ptr().read_unaligned());
+        buffer.Unmap(0, Some(&D3D12_RANGE::default()));
+        words.ok_or_else(|| windows::core::Error::from_hresult(windows::core::HRESULT(0x80004003u32 as i32)))
+    }
+}
+
 /// After `list` has run: the texels its read-backs copied into host
 /// buffers of ours go to the title's memory (`HostList::defer_read_back`).
 ///
@@ -3816,7 +3844,31 @@ pub(crate) fn walls_trace() -> bool {
 /// without it, so the title read a buffer nobody wrote, as before read-backs
 /// were made (the exposure metering's two small float targets, every frame).
 fn read_backs(list: &HostList) {
-    for (buffer, at, [row, rows, pitch]) in &list.deferred().backs {
+    let deferred = list.deferred();
+    #[cfg(feature = "diagnostics")]
+    let deferred = if deferred.target_mesh_args.is_empty() {
+        deferred
+    } else {
+        let mut deferred = deferred;
+        // A closed command list can be submitted again. Keep its copy destinations
+        // alive until reset, and report each recorded command only at first retirement.
+        let samples: Vec<_> = deferred.target_mesh_args.iter_mut()
+            .filter_map(|(buffer, pending)| pending.take().map(|source| (buffer.clone(), source)))
+            .collect();
+        drop(deferred);
+        for (buffer, source) in samples {
+            match read_mesh_args(&buffer) {
+                Ok(xyz) => {
+                    if let Err(error) = source.write(list.trace_id(), xyz) {
+                        tracing::warn!(%error, id = source.command.id, "could not write target mesh arguments");
+                    }
+                }
+                Err(error) => tracing::warn!(%error, id = source.command.id, "could not map target mesh arguments"),
+            }
+        }
+        list.deferred()
+    };
+    for (buffer, at, [row, rows, pitch]) in &deferred.backs {
         let mut data = std::ptr::null_mut();
         // SAFETY: a read-back buffer of ours, written by the list that has
         // run; the title's destination holds every row (checked when the
@@ -4273,16 +4325,17 @@ impl Host {
 
     fn make_card_work(&self) -> anyhow::Result<CardWork> {
         use anyhow::Context;
-        let compiled = Self::compile_card_compare();
+        let compiled = (!parallel_card_digest()).then(Self::compile_card_compare);
         let (bytes, format): (&[u8], &str) = match &compiled {
-            Ok(code) => {
+            None => (CARD_PARALLEL_DXIL, "parallel DXIL"),
+            Some(Ok(code)) => {
                 // SAFETY: the blob remains alive through pipeline creation.
                 let bytes = unsafe {
                     std::slice::from_raw_parts(code.GetBufferPointer().cast::<u8>(), code.GetBufferSize())
                 };
                 (bytes, "FXC")
             }
-            Err(error) => {
+            Some(Err(error)) => {
                 // Wine's compiler cannot read some raw UAV buffers from HLSL.
                 tracing::info!(error = %format_args!("{error:#}"), "card compare uses precompiled DXIL");
                 (CARD_COMPARE_DXIL, "DXIL")
@@ -4594,7 +4647,7 @@ impl Host {
                         for run in runs {
                             let constants = [run.first, run.skew, size as u32, run.pieces, 0, 0];
                             list.SetComputeRoot32BitConstants(0, 6, constants.as_ptr().cast(), 0);
-                            list.Dispatch(run.pieces.div_ceil(64), 1, 1);
+                            list.Dispatch(card_digest_groups(run.pieces), 1, 1);
                         }
                     }
                     list.Close()?;
@@ -4683,7 +4736,7 @@ impl Host {
                         list.SetComputeRoot32BitConstants(0, 6, constants.as_ptr().cast(), 0);
                         list.SetComputeRootShaderResourceView(1, r.shadow.buffer.GetGPUVirtualAddress());
                         list.SetComputeRootUnorderedAccessView(2, before.GetGPUVirtualAddress());
-                        list.Dispatch(r.span.pieces.div_ceil(64), 1, 1);
+                        list.Dispatch(card_digest_groups(r.span.pieces), 1, 1);
                         CARD_PASSES[2].fetch_add(1, Ordering::Relaxed);
                     }
                     // The fetch inside the flight (`inflight_fetch`): behind
@@ -5783,25 +5836,12 @@ impl Host {
             tracing::warn!(submission, group, target, completed, "bounded mesh sample fence incomplete");
             return;
         }
-        let range = D3D12_RANGE { Begin: 0, End: 12 };
-        let mut data = std::ptr::null_mut();
-        // SAFETY: a live readback buffer, with its GPU write finished.
-        let result = unsafe { back.Map(0, Some(&range), Some(&mut data)) };
-        if let Err(error) = result {
-            tracing::warn!(submission, group, %error, "bounded mesh sample could not map");
-            return;
-        }
-        if data.is_null() {
-            // SAFETY: Map succeeded. We wrote no data.
-            unsafe { back.Unmap(0, Some(&D3D12_RANGE::default())) };
-            tracing::warn!(submission, group, "bounded mesh sample mapped to null");
-            return;
-        }
-        // SAFETY: successful map of the 12-byte copy. We wrote no data.
-        let words = unsafe {
-            let words = data.cast::<[u32; 3]>().read_unaligned();
-            back.Unmap(0, Some(&D3D12_RANGE::default()));
-            words
+        let words = match read_mesh_args(back) {
+            Ok(words) => words,
+            Err(error) => {
+                tracing::warn!(submission, group, %error, "bounded mesh sample could not map");
+                return;
+            }
         };
         tracing::info!(target: "victory_gpu::memory_watch", submission, group, fence = target,
             list = format_args!("{:#x}", list.trace_id()), guest = format_args!("{address:#x}"),
@@ -6040,6 +6080,8 @@ impl Host {
             let writes = runs.iter().flat_map(|list| {
                 let deferred = list.deferred();
                 has_texture_readbacks |= !deferred.backs.is_empty();
+                #[cfg(feature = "diagnostics")]
+                { has_texture_readbacks |= !deferred.target_mesh_args.is_empty(); }
                 deferred.writes.clone()
             }).collect();
             SUBMISSION_US[0].fetch_add((prepared - started).saturating_sub(settled).as_micros() as u64, Ordering::Relaxed);
@@ -6558,7 +6600,21 @@ impl HostList {
 
     #[cfg(feature = "diagnostics")]
     pub(crate) fn record_bounded_mesh_sample(&self, bounded: &ID3D12Resource, offset: u64, address: u64) -> bool {
-        let Some(back) = host().and_then(|host| host.read_back_buffer(12)) else { return false };
+        let Some(back) = self.copy_bounded_mesh_args(bounded, offset) else { return false };
+        self.deferred().bounded_mesh_sample = Some((back, address));
+        true
+    }
+
+    #[cfg(feature = "diagnostics")]
+    pub(crate) fn record_target_mesh_args(&self, bounded: &ID3D12Resource, offset: u64, source: crate::capture::mesh_args::Source) -> bool {
+        let Some(back) = self.copy_bounded_mesh_args(bounded, offset) else { return false };
+        self.deferred().target_mesh_args.push((back, Some(source)));
+        true
+    }
+
+    #[cfg(feature = "diagnostics")]
+    fn copy_bounded_mesh_args(&self, bounded: &ID3D12Resource, offset: u64) -> Option<ID3D12Resource> {
+        let back = host()?.read_back_buffer(12)?;
         // SAFETY: the clamp leaves this record in INDIRECT_ARGUMENT. The
         // readback buffer starts in COPY_DEST and the list is open.
         unsafe {
@@ -6570,8 +6626,7 @@ impl HostList {
                 bounded, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT,
             )]);
         }
-        self.deferred().bounded_mesh_sample = Some((back, address));
-        true
+        Some(back)
     }
 
     #[cfg(feature = "diagnostics")]
@@ -7180,21 +7235,11 @@ impl HostList {
             && self.twins.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
     }
 
-    /// Only called after a graphics command can run. Compute and its resource preparation
-    /// do not pass here. The per-list counts survive replay and are cleared by reset.
-    #[inline]
-    pub(crate) fn draw_enabled(&self, pipeline: usize) -> bool {
-        #[cfg(feature = "diagnostics")]
-        if crate::shader_toggle::enabled()
-            && let Some(id) = crate::pipeline::graphics_id(pipeline as crate::object::This)
-        {
-            let draw = crate::shader_toggle::permits(id);
-            self.deferred().shader_counts.entry(id).or_default().record(draw);
-            return draw;
+    #[cfg(feature = "diagnostics")]
+    pub(crate) fn seal_shader_counts(&self, recording: &mut crate::shader_toggle::Recording) {
+        if let Some(counts) = recording.take() {
+            self.deferred().shader_counts = counts;
         }
-        #[cfg(not(feature = "diagnostics"))]
-        let _ = pipeline;
-        true
     }
 
     /// Notes a pipeline the list binds.
@@ -7832,11 +7877,29 @@ impl Batch {
             // The time counted is the time it took, not the threads' sum.
             let started = std::time::Instant::now();
             let before = PREPARING[0].load(Ordering::Relaxed);
-            let jobs: Vec<Box<dyn FnOnce() + Send>> = self
-                .refreshes
-                .drain(..)
-                .map(|(shadow, from, to)| Box::new(move || Self::update(&shadow, from, to)) as Box<dyn FnOnce() + Send>)
-                .collect();
+            // A heap pass can refresh thousands of small views. Give a worker
+            // several independent copies per trip through the shared queue.
+            // Large copies still run separately so other workers can help.
+            let mut pending = self.refreshes.drain(..).peekable();
+            let mut jobs: Vec<Box<dyn FnOnce() + Send>> = Vec::new();
+            while let Some(first) = pending.next() {
+                let mut bytes = first.2 - first.1;
+                let mut group = vec![first];
+                while group.len() < 64 {
+                    let Some(next) = pending.next_if(|(_, from, to)| {
+                        bytes.saturating_add(to - from) <= 256 * 1024
+                    }) else {
+                        break;
+                    };
+                    bytes += next.2 - next.1;
+                    group.push(next);
+                }
+                jobs.push(Box::new(move || {
+                    for (shadow, from, to) in group {
+                        Self::update(&shadow, from, to);
+                    }
+                }));
+            }
             crate::shadow::wide_run(jobs);
             let summed = PREPARING[0].load(Ordering::Relaxed).saturating_sub(before);
             PREPARING[0].fetch_sub(summed.saturating_sub(started.elapsed().as_micros() as u64), Ordering::Relaxed);
@@ -9221,6 +9284,35 @@ mod spare {
 mod batch {   // Batch::texture_due lives here; `mod tests` is already taken at the top of this file
     use super::Batch;
     use std::sync::Arc;
+
+    #[test]
+    #[ignore = "requires a D3D12 device"]
+    fn mixed_size_refreshes_copy_every_byte() {
+        let mut batch = Batch::default();
+        let mut copies = Vec::new();
+        for i in 0..140 {
+            let size = if i == 68 { 300 * 1024 } else { 128 + i * 13 };
+            let data: Vec<u8> = (0..size).map(|j| (i * 37 + j) as u8).collect();
+            let address = data.as_ptr() as usize;
+            crate::shadow::register(address, address as u64, size as u64);
+            let copy = crate::shadow::find(address as u64, size as u64).unwrap();
+            batch.add(&copy, address, size);
+            copies.push((data, copy));
+        }
+        batch.flush();
+        assert!(batch.refreshes.is_empty() && batch.index.is_empty());
+        for (data, copy) in copies {
+            let address = data.as_ptr() as usize;
+            crate::shadow::unregister(address, address as u64);
+            let mut pointer = std::ptr::null_mut();
+            // SAFETY: each CPU-visible test buffer is idle and covers its source.
+            unsafe {
+                copy.buffer.Map(0, None, Some(&mut pointer)).unwrap();
+                assert_eq!(std::slice::from_raw_parts(pointer.cast::<u8>(), data.len()), &data[..]);
+                copy.buffer.Unmap(0, None);
+            }
+        }
+    }
 
     #[test]
     fn a_texture_is_checked_once_per_submission() {

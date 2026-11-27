@@ -1,4 +1,4 @@
-"""Compile Victory's two HLSL compute kernels with the DirectX Shader Compiler."""
+"""Compile Victory's HLSL compute kernels with the DirectX Shader Compiler."""
 import argparse
 import os
 from pathlib import Path
@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 
 
 ROOT = Path(__file__).resolve().parents[2] / "crates/victory-gpu/src"
-SOURCES = ("indirect/clamp.hlsl", "host/card_compare.hlsl")
+SOURCES = ("indirect/clamp.hlsl", "host/card_compare.hlsl", "host/card_compare_parallel.hlsl")
 
 
 def find_dxc():

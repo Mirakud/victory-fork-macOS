@@ -12,6 +12,8 @@ cargo build --locked --release --manifest-path tools/shaders/prepare-arm64/Cargo
 prep="$work/build/release/victory-prepare-shaders"
 ```
 
+La commande `"$prep" identity` affiche la clé que le préparateur inscrit dans les octets 8 à 39 des packs VSP1. Le profil public avec diagnostics et réglages de traduction par défaut utilise `d6b56b368b0f6ce27b5b819dc4b894255b9ef61d1933c67010652f6a2cb6bb62`. Les packs de l’essai privé D3 portent la clé `578b25415d58675d5ba8637836bf4f93baf92f43cb501d6a0365e01c3cec4218`. Pour utiliser ces mêmes shaders avec le lecteur public, reconstruisez votre pack et votre overlay depuis vos conteneurs personnels avec les commandes suivantes.
+
 Pour amorcer un premier pack, fournissez un fichier SGD5 personnel ou une archive du jeu contenant un SGD5. `extract` lit l’archive en mémoire et s’arrête après le nombre demandé de conteneurs distincts. Pour une session qui possède déjà un dossier `shader-misses`, utilisez directement ce dossier comme valeur de `inputs` et passez à `pack`.
 
 ```sh

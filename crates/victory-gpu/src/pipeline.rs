@@ -182,7 +182,8 @@ fn translate(container: &[u8]) -> Result<Translated, String> {
         Some(part) => victory_shader::native_programs(part.data).map_err(|e| e.to_string())?,
         None => Vec::new(),
     };
-    let host = crate::shader_cache::host_shader(container)?;
+    let host = crate::shader_cache::host_shader(container)
+        .or_else(|error| crate::shader_cache::readonly::belobug::recover(container, error))?;
     let stores = programs.is_empty() || programs.iter().any(stores);
     let used = programs
         .into_iter()
@@ -833,6 +834,31 @@ mod tests {
 
     use super::*;
     use crate::object::{S_OK, slot};
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "requires the real guest shader and a D3D12 device; creates a PSO only"]
+    fn cascade_compute_pipeline_after_standard_refusal() {
+        let input = std::fs::read(std::env::var_os("VICTORY_TEST_CASCADE_INPUT").unwrap()).unwrap();
+        let expect = std::env::var_os("VICTORY_TEST_CASCADE_EXPECT").unwrap();
+        crate::descriptor::host::probe_view_limit();
+        println!("consumer build {}", crate::shader_cache::readonly::belobug::consumer_build());
+        let error = crate::shader_cache::host_shader(&input).expect_err("actual standard refusal");
+        assert!(error.contains("GFX10 code at 0x1eb4: a lane mask exchanged"), "{error}");
+        let shader = shader("compute", &input);
+        let pipeline = host::HostPipeline::new(&[shader], None);
+        assert_eq!(pipeline.is_some(), expect == "1", "standard error: {error}");
+        if let Some(pipeline) = pipeline {
+            assert!(pipeline.compute);
+            assert_eq!(pipeline.stages.len(), 1);
+            let stage = pipeline.stages[0].translated();
+            assert_eq!(stage.host.stage, victory_shader::HwStage::Cs);
+            assert_eq!(stage.host.dxil.len(), 665916);
+            assert!(!stage.host.user_data.is_empty());
+            println!("D3D12 cascade compute PSO {} bytes, {} user bindings, {} resource views",
+                stage.host.dxil.len(), stage.host.user_data.len(), stage.used.len());
+        }
+    }
 
     fn shaders(p: This) -> Vec<(&'static str, Vec<u8>)> {
         pipeline(p)

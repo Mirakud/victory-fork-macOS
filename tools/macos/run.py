@@ -1,15 +1,19 @@
 """Lance Victory avec D3DMetal 4 et le moniteur mémoire sur un dossier de jeu local préparé."""
 import argparse
+from contextlib import ExitStack, contextmanager
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import shlex
+import select
 import signal
+import socket
 import shutil
 import subprocess
 import sys
+import threading
 from tempfile import mkdtemp
 import xml.etree.ElementTree as ET
 
@@ -116,7 +120,61 @@ def drive_z(path):
     return "Z:" + path.as_posix()
 
 
+@contextmanager
+def dualsense_presence(binary, run):
+    state = run / "sony-present"
+    with (run / "sony-detection.log").open("wb") as log:
+        try:
+            helper = subprocess.Popen([str(binary), "--watch-dualsense", str(state)],
+                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log)
+        except OSError as error:
+            print(f"Détection Sony indisponible ({error}), lecture WinMM conservée.", file=sys.stderr)
+            yield False
+            return
+        stopping = threading.Event()
+        watcher = None
+        try:
+            readable, _, _ = select.select([helper.stdout], [], [], 5)
+            ready = bool(readable and helper.stdout.readline() == b"ready\n")
+            if ready:
+                def recover_on_exit():
+                    helper.wait()
+                    if not stopping.is_set():
+                        # Allow WinMM to discover the pad if native detection stops mid-run.
+                        temporary = state.with_suffix(".restore")
+                        try:
+                            temporary.write_text("1\n", encoding="ascii")
+                            temporary.replace(state)
+                            log.write(b"Detection HID interrompue, lecture WinMM reactivee.\n")
+                        except OSError as error:
+                            log.write(f"Impossible de restaurer la lecture WinMM : {error}\n".encode())
+                        log.flush()
+
+                watcher = threading.Thread(target=recover_on_exit, name="victoire-detection-sony", daemon=True)
+                watcher.start()
+            else:
+                print("Détection Sony indisponible, lecture WinMM conservée.", file=sys.stderr)
+                helper.terminate()
+            yield ready
+        finally:
+            stopping.set()
+            helper.stdin.close()
+            helper.stdout.close()
+            try:
+                helper.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                helper.kill()
+                helper.wait()
+            if watcher:
+                watcher.join()
+
+
 def main():
+    with ExitStack() as resources:
+        return run_profile(resources)
+
+
+def run_profile(resources):
     p = argparse.ArgumentParser(description=__doc__)
     for name in ("victory", "engine", "bottle", "output"):
         p.add_argument("--" + name, type=absolute, required=True)
@@ -125,22 +183,25 @@ def main():
     p.add_argument("--data", type=absolute, help="dossier de données Victory à copier pour cet essai")
     p.add_argument("--shader-pack", type=absolute, help="pack privé compatible avec le binaire utilisé")
     p.add_argument("--shader-overlay", type=absolute, help="pack VSP1 de traductions supplémentaires du même build")
+    p.add_argument("--shader-store", type=absolute, metavar="DOSSIER", help="répertoire privé de traductions préparées pour le même build")
+    p.add_argument("--shader-names", type=absolute, metavar="JSON", help="catalogue privé de noms de shaders pour le panneau A/B")
     p.add_argument("--shader-ab", action="store_true", help="afficher le HUD et son panneau de contrôle des pipelines et des paires de shaders")
     p.add_argument("--capture-shader-misses", action="store_true", help="conserver les conteneurs traduits à la volée dans la session")
     p.add_argument("--shader-refusal-cache", type=absolute, metavar="DOSSIER", help="conserver les refus de traduction reconnus, isolés par empreinte de Victory")
     p.add_argument("--prewarm-pipeline", type=pipeline_key, action="append", default=[], help="clé de pipeline à préparer à sa création (8 maximum)")
     p.add_argument("--required-pipeline", type=pipeline_key, action="append", default=[], help="clé dont le premier dessin attend le résultat (8 maximum)")
     profiles = p.add_mutually_exclusive_group()
-    profiles.add_argument("--prison-profile", action="store_true", help="réglages de la session jouable 030001, panneau shaders et mémoire gérée par macOS")
+    profiles.add_argument("--prison-profile", "--prison", action="store_true", help="réglages de la session jouable 030001, panneau shaders et mémoire gérée par macOS")
+    profiles.add_argument("--prison-peau", action="store_true", help="profil de la cour avec visage et cou, entrées et un travailleur de chargement (session 124802)")
     profiles.add_argument("--intro-profile", action="store_true", help="profil expérimental Series S des pools et des lectures ; applique LOD 0,45 et seuil 2 à la copie de --data")
     p.add_argument("--pipeline-manifest", type=absolute, help="liste privée de clés à préparer")
     p.add_argument("--perf-hud", action="store_true", help="afficher les FPS mesurés et la mémoire de Victory au-dessus du jeu")
     p.add_argument("--preview", action="store_true", help="afficher la commande sans créer de dossier ni lancer Wine")
     args = p.parse_args()
-    for path in (args.victory, args.title, args.shader_pack, args.shader_overlay, args.pipeline_manifest):
+    for path in (args.victory, args.title, args.shader_pack, args.shader_overlay, args.pipeline_manifest, args.shader_names):
         if path and not path.is_file():
             p.error(f"fichier manquant : {path}")
-    for path in (args.bottle, args.engine, args.data):
+    for path in (args.bottle, args.engine, args.data, args.shader_store):
         if path and not path.is_dir():
             p.error(f"dossier manquant : {path}")
     if args.data and (args.output == args.data or args.data in args.output.parents):
@@ -150,12 +211,13 @@ def main():
     if len(args.prewarm_pipeline) > 8 or len(args.required_pipeline) > 8:
         p.error("huit clés au maximum pour chaque sélection de pipelines")
     settings = None
-    if args.prison_profile:
+    prison = args.prison_profile or args.prison_peau
+    if prison:
         args.shader_ab = True
         args.capture_shader_misses = bool(args.shader_pack)
         if args.shader_pack and not args.shader_refusal_cache:
             args.shader_refusal_cache = args.output / "shader-refusals"
-    if args.intro_profile or args.prison_profile:
+    if args.intro_profile or prison:
         if not args.data:
             p.error("le profil choisi nécessite les données de la partie à copier avec --data")
         try:
@@ -176,14 +238,33 @@ def main():
             (run / folder).mkdir(exist_ok=True)
     config = dict(PROFILE, VICTORY_GAME_DIR=drive_z(args.title.parent), VICTORY_DATA_DIR=drive_z(run/"data"),
                   VICTORY_CACHE_DIR=drive_z(run/"cache"), VICTORY_CAPTURE=drive_z(run/"captures"))
+    input_socket = hud_binary = None
+    if args.perf_hud and not args.preview:
+        from victory_perf_feed import PerformanceHUD, build_hud
+        hud_binary = build_hud(TOOLS / "victory_perf_hud.swift")
     if args.shader_pack:
         config["VICTORY_READONLY_SHADER_PACK"] = drive_z(args.shader_pack)
     if args.intro_profile:
         config.update(INTRO)
-    elif args.prison_profile:
+    elif prison:
         config.update(PRISON)
         config["VICTORY_CONFIRM_FILE"] = drive_z(run / "confirm")
         config["VICTORY_CAPTURE_FILE"] = drive_z(run / "capture")
+    if args.prison_peau:
+        config.pop("VICTORY_TRACE_STALLED_MESH")
+        config.update(VICTORY_PARALLEL_CARD_DIGEST="1", VICTORY_CARD_REHASH_RUNS="1",
+                      VICTORY_PED_MATERIAL_TEXTURES="1", VICTORY_MEMORY_MAP="0", VICTORY_STORAGE_WORKERS="1",
+                      VICTORY_KEYS="35:Enter", VICTORY_CAPTURE_TARGETS_FILE=drive_z(run / "capture-targets"))
+        input_socket = resources.enter_context(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
+        input_socket.bind(("127.0.0.1", 0))
+        input_socket.setblocking(False)
+        config["VICTORY_INPUT_HUD_PORT"] = str(input_socket.getsockname()[1])
+        if args.preview or resources.enter_context(dualsense_presence(hud_binary, run)):
+            config["VICTORY_DUALSENSE_PRESENT_FILE"] = drive_z(run / "sony-present")
+    if args.shader_store:
+        config["VICTORY_READONLY_SHADER_STORE"] = drive_z(args.shader_store)
+    if args.shader_names and args.shader_ab and not args.preview:
+        shutil.copyfile(args.shader_names, run / "shader-names.json")
     if args.shader_overlay:
         config["VICTORY_READONLY_SHADER_OVERLAY"] = drive_z(args.shader_overlay)
     if args.shader_ab:
@@ -207,21 +288,20 @@ def main():
     child = [sys.executable, str(TOOLS/"wine_sikarugir.py"), "--bottle", str(args.bottle),
              "--no-gui", "--env", shlex.join([key+"="+value for key, value in config.items()]),
              "--wait", str(args.victory), "run", drive_z(args.title), "--execute", "--console", "series-s"]
-    memory = ["--no-memory-limit"] if args.prison_profile else ["--max-wired-mib", "9216"]
+    memory = ["--no-memory-limit"] if prison else ["--max-wired-mib", "9216"]
     command = [sys.executable, str(TOOLS/"monitor_xcl_run.py"), *memory,
-               "--report-peak-used-percent", "95", "--poll-interval", "1.0" if args.prison_profile else "0.05",
+               "--report-peak-used-percent", "95", "--poll-interval", "1.0" if prison else "0.05",
                "--telemetry-path", str(run/"telemetry.jsonl"), "--", *child]
     if args.preview:
         print(shlex.join(command))
         if args.perf_hud:
             print("Encart natif demandé (FPS, mémoire de Victory, mirakud).")
         return 0
-    if args.perf_hud:
-        from victory_perf_feed import PerformanceHUD, build_hud
-        hud_binary = build_hud(TOOLS / "victory_perf_hud.swift")
     env = dict(os.environ, UNCORK_SIKARUGIR_ENGINE=str(args.engine), VICTORY_MAC_BOTTLE=str(args.bottle))
     record = {"mode": "run", "command": command, "perf_hud": args.perf_hud, "shader_ab": args.shader_ab,
-              "intro_profile": args.intro_profile, "prison_profile": args.prison_profile, "capture_shader_misses": args.capture_shader_misses}
+              "intro_profile": args.intro_profile, "prison_profile": args.prison_profile, "prison_peau": args.prison_peau, "capture_shader_misses": args.capture_shader_misses}
+    if args.prison_peau:
+        record["victory_sha256"] = sha256(args.victory)
     for name, pack in (("readonly_shader_pack", args.shader_pack), ("readonly_shader_overlay", args.shader_overlay)):
         if pack:
             record[name] = str(pack)
@@ -238,7 +318,7 @@ def main():
         try:
             if args.perf_hud:
                 try:
-                    hud = PerformanceHUD(hud_binary, run, args.victory, monitor.pid, shader_ab=args.shader_ab)
+                    hud = PerformanceHUD(hud_binary, run, args.victory, monitor.pid, shader_ab=args.shader_ab, input_socket=input_socket)
                 except OSError as error:
                     print(f"Encart indisponible : {error}", file=sys.stderr)
             rc = monitor.wait()

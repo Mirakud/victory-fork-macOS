@@ -140,16 +140,36 @@ fn repack_guest_pair(mesh: &Shader, pixel: &Shader) -> Option<Packing> {
     const CLIPS: &str = "da22b2adfd4f76d3c60ec4c677a5bcf425ebd56efab5bb6bfaadc865cda827e7";
     const SKIN_A: &str = "093c64546c55554eeab33ae185cc4706eaaa7ade462421a469320cca715f1700";
     const SKIN_B: &str = "ef5409053e14aa82cf76f49933349d63e92f7cc7c882e445d7a7c970d9e6e000";
-    const PAIRS: [(&str, &str, Packing); 5] = [
+    const PAIRS: [(&str, &str, Packing); 11] = [
         (CLIPS, "d4f7cbbbf181e45291ac22a0d244c1aa2e75f8e82678ac94631a2f217b34b50f", Packing::ClipVaryings),
         (CLIPS, "f87e29908986f4d8d3c34df4cb2f18bbd986662a23fe5ee5fa29c324f904f6d6", Packing::ClipVaryings),
         (SKIN_A, "818a9a0ec6a53abbb3c7a0256b7cc3facd3661845e18625577435985a4936fcb", Packing::SharedRows),
         (SKIN_A, "1b76b94a7050f18419932e0ed9139d0c1946a0bf9d734e4ad654e16aa9e3900b", Packing::SharedRows),
         (SKIN_B, "94d281151ca58b4ffccf2cec90b3be4fa95e6ba898f48118f3da34be8d4ab4e5", Packing::SharedRows),
+        (SKIN_A, "55cf1a9737f7672f062a392e92488e128f9275a1d873038d7833d0bb811499a9", Packing::SharedRows),
+        (SKIN_B, "06d8cea6aafd5613af6bd922cf15b206a29d92d7a4c9182f5ca5dd796f97fb3d", Packing::SharedRows),
+        ("0d9099a35c000feba3e1b93a70a26884508d6d4907d46ac1c90057958719c4bd", "818a9a0ec6a53abbb3c7a0256b7cc3facd3661845e18625577435985a4936fcb", Packing::SharedRows),
+        ("fc2e14d6971785dd9cb8a749c685c401361d7bb61186b6433727c6ba5ac08acf", "9452ffb5434e4e157ad159f351c11cfc06c004655aee9d43c60b74d647253e6f", Packing::SharedRows),
+        ("958c32b0c087f618d9b75f732a4ad5cfb678d7d69249944e0efe5c4cdbbc79f9", "df3b213194206d75f409cf78ba4e6039f1dc4b2c4f6f6b421fa54ebd08bd4e5b", Packing::SharedRows),
+        ("c5687f9ec96848e8c438d7c736eb901d4adc27c2bbe84788cfbb69682ef9d4f1", "3847458f4cebb0ba79820cc9c52fedd8439a25aba443e9d15aec796d7a37ae12", Packing::SharedRows),
     ];
     let &(ms, ps, packing) = PAIRS.iter().find(|(ms, ps, _)| mesh.hash == ms[..16] && pixel.hash == ps[..16])?;
     (blake3::hash(&mesh.container).to_hex().as_str() == ms
         && blake3::hash(&pixel.container).to_hex().as_str() == ps).then_some(packing)
+}
+
+// The prison profile also uses this alpha-clipped pedestrian material with
+// another mesh. Several guest IDs produce these same two host shaders.
+// Match the complete original DXIL recorded by the driver for this PSO.
+fn prison_tint_packing(mesh: &Shader, pixel: &Shader) -> Option<Packing> {
+    let mesh = &mesh.translated()?.host.dxil;
+    let pixel = &pixel.translated()?.host.dxil;
+    if mesh.len() != 30_880 || pixel.len() != 84_585 {
+        return None;
+    }
+    (blake3::hash(mesh).to_hex().as_str() == "4a7e60a13213e1876c9bbb2ae6b5c61d15cf216fd492fd568f957320b78e688e"
+        && blake3::hash(pixel).to_hex().as_str() == "c05169b64caf683ca1ae1c4a6c5dbe72d963946455c755d12b6f8e1bc9455d8b")
+        .then_some(Packing::SharedRows)
 }
 
 pub(super) fn repack_refused_metal_pair(mesh: &Shader, pixel: &Shader) -> Option<[Vec<u8>; 2]> {
@@ -161,7 +181,7 @@ pub(super) fn repack_refused_metal_pair(mesh: &Shader, pixel: &Shader) -> Option
     }) {
         return None;
     }
-    let packing = repack_guest_pair(mesh, pixel)?;
+    let packing = repack_guest_pair(mesh, pixel).or_else(|| prison_tint_packing(mesh, pixel))?;
     static KEEP_CLIPS: OnceLock<bool> = OnceLock::new();
     let keep_clips = matches!(packing, Packing::SharedRows) || *KEEP_CLIPS.get_or_init(|| {
         std::env::var_os("VICTORY_MESH_REPACK_KEEP_CLIPS").is_some_and(|value| value == "1")

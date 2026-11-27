@@ -1,0 +1,56 @@
+--- a/dlls/winecoreaudio.drv/coreaudio.c
++++ b/dlls/winecoreaudio.drv/coreaudio.c
+@@ -42,0 +43 @@
++#include <dispatch/dispatch.h>
+@@ -110,0 +112,2 @@
++    dispatch_semaphore_t timer_wake;
++    BOOL timer_waiting; /* guarded by lock */
+@@ -810,0 +814 @@
++        stream->timer_wake = dispatch_semaphore_create(0);
+@@ -815,0 +820,9 @@
++}
++
++/* The lock serializes a pending wait with Start and final Release. */
++static void wake_parked_timer(struct coreaudio_stream *stream)
++{
++    if (stream->timer_waiting) {
++        stream->timer_waiting = FALSE;
++        dispatch_semaphore_signal(stream->timer_wake);
++    }
+@@ -824,0 +838 @@
++        os_unfair_lock_lock(&stream->lock);
+@@ -825,0 +840,2 @@
++        wake_parked_timer(stream);
++        os_unfair_lock_unlock(&stream->lock);
+@@ -848,0 +865 @@
++    if (stream->timer_wake) dispatch_release(stream->timer_wake);
+@@ -1413,0 +1431 @@
++        wake_parked_timer(stream);
+@@ -1476,3 +1494,16 @@
+-    delay.QuadPart = -stream->period;
+-    NtQueryPerformanceCounter(&last, NULL);
+-    next.QuadPart = last.QuadPart + stream->period;
++    BOOL reset_clock = TRUE;
++
++    for (;;) {
++        os_unfair_lock_lock(&stream->lock);
++        if (stream->please_quit) {
++            os_unfair_lock_unlock(&stream->lock);
++            break;
++        }
++        if (!stream->playing && stream->timer_wake) {
++            stream->timer_waiting = TRUE;
++            os_unfair_lock_unlock(&stream->lock);
++            dispatch_semaphore_wait(stream->timer_wake, DISPATCH_TIME_FOREVER);
++            reset_clock = TRUE;
++            continue;
++        }
++        os_unfair_lock_unlock(&stream->lock);
+@@ -1480 +1511,6 @@
+-    while(!stream->please_quit){
++        if (reset_clock) {
++            delay.QuadPart = -stream->period;
++            NtQueryPerformanceCounter(&last, NULL);
++            next.QuadPart = last.QuadPart + stream->period;
++            reset_clock = FALSE;
++        }

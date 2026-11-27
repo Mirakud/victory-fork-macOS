@@ -8,6 +8,8 @@
 //! stencil reference, topology, targets) is set on the host list as the
 //! title sets it.
 
+mod ped_material;
+
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use victory_shader::resource::RootIndexedView;
@@ -276,6 +278,10 @@ impl BoundTargets {
 /// What one title list has set, and what its host list was last given.
 #[derive(Default)]
 pub(crate) struct State {
+    /// Draws recorded into the current native list. Its close transfers these
+    /// to the list so later submissions (including replays) see the same counts.
+    #[cfg(feature = "diagnostics")]
+    pub(crate) shader_counts: crate::shader_toggle::Recording,
     pipeline: usize,
     /// View heap, sampler heap.
     heaps: [usize; 2],
@@ -589,6 +595,17 @@ fn set(roots: &mut Vec<Root>, slot: u32, root: Root) {
 }
 
 impl State {
+    /// Recording already holds the title list's state lock.
+    fn draw_enabled(&mut self) -> bool {
+        #[cfg(feature = "diagnostics")]
+        if crate::shader_toggle::enabled()
+            && let Some(id) = crate::pipeline::graphics_id(self.pipeline as This)
+        {
+            return self.shader_counts.record(id);
+        }
+        true
+    }
+
     pub(crate) fn reset(&mut self, pipeline: This) {
         *self = State::default();
         self.pipeline = pipeline as usize;
@@ -726,6 +743,8 @@ impl State {
             crate::capture::note_target(record.resource);
             Some((texture.clone(), desc))
         });
+        #[cfg(feature = "diagnostics")]
+        crate::capture::note_deferred_targets(&self.targets, self.depth);
         let bound = BoundTargets { colours, depth };
         bound.bind(host, list);
         self.bound_targets = Some(bound);
@@ -1087,6 +1106,9 @@ impl State {
             // The title may release the pipeline before it submits the list.
             list.keep(&p.pso);
             list.keep(&p.root);
+        }
+        if !compute {
+            ped_material::prepare(self, list, p);
         }
         for stage in &p.stages {
             let t = stage.translated();
@@ -2581,7 +2603,7 @@ impl State {
             && self.prepare_for(list, false, true)
             && match list.list.cast::<ID3D12GraphicsCommandList6>() {
                 Ok(l6) => {
-                    let enabled = list.draw_enabled(self.pipeline);
+                    let enabled = self.draw_enabled();
                     #[cfg(feature = "diagnostics")]
                     list.note_op(|| self.op_text(format!("mesh {x}"), false));
                     #[cfg(feature = "diagnostics")]
@@ -3168,7 +3190,7 @@ impl State {
         let rects = self.topology == RECTANGLES && !self.completes_rects();
         let ran = ready && (!rects || self.rectangles(list, vertices, first));
         if ran {
-            if !list.draw_enabled(self.pipeline) {
+            if !self.draw_enabled() {
                 return;
             }
             // Rectangles were expanded into their own vertex buffers.
@@ -3278,7 +3300,7 @@ impl State {
         }
         let ran = !lost && self.prepare(list, true);
         if ran {
-            if !list.draw_enabled(self.pipeline) {
+            if !self.draw_enabled() {
                 return;
             }
             #[cfg(feature = "diagnostics")]
@@ -3541,11 +3563,26 @@ impl State {
         {
             list.note_mesh_source(&args, target);
         }
+        let enabled = kind == DISPATCH || self.draw_enabled();
+        #[cfg(feature = "diagnostics")]
+        let sample = {
+            let frame = crate::queue::presented() + 1;
+            if enabled && kind == MESH && max == 1 && stride == 12
+                && crate::capture::mesh_args::requested(frame)
+                && p.stages.iter().any(|s| list_slots().iter().any(|prefix| s.shader.hash.starts_with(prefix)))
+            {
+                crate::capture::mesh_args::reserve(frame)
+            } else { None }
+        };
         #[cfg(feature = "diagnostics")]
         list.note_op(|| {
-            self.op_text(format!("indirect kind {kind} max {max} at {arguments:#x}"), kind == DISPATCH)
+            let mut text = self.op_text(format!("indirect kind {kind} max {max} at {arguments:#x}"), kind == DISPATCH);
+            if let Some(command) = sample {
+                use std::fmt::Write;
+                let _ = write!(text, " mesh_args_frame={} mesh_args_id={}", command.frame, command.id);
+            }
+            text
         });
-        let enabled = kind == DISPATCH || list.draw_enabled(self.pipeline);
         if kind == MESH {
             self.mesh_scissor(list, true);
         }
@@ -3566,6 +3603,17 @@ impl State {
         if kind == MESH {
             #[cfg(feature = "diagnostics")]
             if enabled {
+                if let Some(command) = sample {
+                    let source = crate::capture::mesh_args::Source {
+                        command, guest: arguments, count_guest: count, shadow: args.id(),
+                        source_gpu: args.gpu(arguments), pipeline: p.name.clone(),
+                        // SAFETY: this is the buffer and byte offset just passed to ExecuteIndirect.
+                        bounded_gpu: unsafe { bounded.GetGPUVirtualAddress() } + at,
+                    };
+                    if !list.record_target_mesh_args(&bounded, at, source) {
+                        tracing::warn!(id = command.id, "could not allocate target mesh readback");
+                    }
+                }
                 list.record_mesh(self.host_pipeline, crate::host::stalled_mesh::Mesh::Indirect { arguments, max, count });
             }
             self.mesh_scissor(list, false);
@@ -3632,7 +3680,7 @@ impl State {
             return false;
         }
         let FencedMesh { signature, bounded, at, counter, arguments } = mesh;
-        let enabled = list.draw_enabled(self.pipeline);
+        let enabled = self.draw_enabled();
         list.note_op(|| self.op_text(format!("indirect kind 10 max 1 at {arguments:#x}"), false));
         self.mesh_scissor(list, true);
         let target_before = (cut && crate::capture::fenced_mesh_target_pending())

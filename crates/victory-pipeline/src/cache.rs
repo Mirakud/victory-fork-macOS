@@ -11,12 +11,24 @@ pub struct CacheKey(blake3::Hash);
 
 impl CacheKey {
     pub fn new(converter: &dyn Converter, input: &[u8]) -> Self {
+        Self::from_parts(converter.id(), converter.version(), [input])
+    }
+
+    /// Hash the same input without joining its existing slices first.
+    pub fn from_parts<'a>(id: &str, version: u32, input: impl IntoIterator<Item = &'a [u8]>) -> Self {
         let mut h = blake3::Hasher::new();
-        h.update(converter.id().as_bytes());
+        h.update(id.as_bytes());
         h.update(&[0]);
-        h.update(&converter.version().to_le_bytes());
-        h.update(input);
+        h.update(&version.to_le_bytes());
+        for bytes in input {
+            h.update(bytes);
+        }
         CacheKey(h.finalize())
+    }
+
+    pub fn path_under(&self, root: &Path) -> PathBuf {
+        let hex = self.to_hex();
+        root.join(&hex[..2]).join(&hex[2..])
     }
 
     pub fn to_hex(&self) -> String {
@@ -40,8 +52,7 @@ impl Cache {
     }
 
     pub fn path_for(&self, key: &CacheKey) -> PathBuf {
-        let hex = key.to_hex();
-        self.root.join(&hex[..2]).join(&hex[2..])
+        key.path_under(&self.root)
     }
 
     /// Returns the cached output for `input`, converting it first if needed.

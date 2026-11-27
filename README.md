@@ -2,11 +2,13 @@
 
 <a href="docs/macos/030001-prison-cour.png"><img src="docs/macos/030001-prison-cour.png" alt="Dans la cour de la prison sur Mac M3, le jeu invite à déplacer le personnage et la caméra" width="960"></a>
 
-*Premiers déplacements dans la prison sur Mac M3. [Voir le personnage de profil](docs/macos/030001-prison-profil.png).*
+*Premiers déplacements dans la prison sur Mac M3.*
 
-<a href="docs/macos/menu-game-macos.png"><img src="docs/macos/menu-game-macos.png" alt="Menu Game sous macOS, avec Save Game sélectionné au-dessus de Load Game et New Game" width="960"></a>
+| Personnage de profil dans la prison | Menu Game sur macOS |
+| --- | --- |
+| <a href="docs/macos/030001-prison-profil.png"><img src="docs/macos/030001-prison-profil.png" alt="Vue de profil du personnage dans la prison, où le visage et le cou sont partiellement invisibles" width="480"></a> | <a href="docs/macos/menu-game-macos.png"><img src="docs/macos/menu-game-macos.png" alt="Menu Game sous macOS, avec Save Game sélectionné au-dessus de Load Game et New Game" width="480"></a> |
 
-*Menu Game sur macOS. Avec Save Game sélectionné, la fenêtre indique 5 FPS, 197,2 ms par image et 64 dessins par image.*
+Sur la capture du menu, la fenêtre indique 5 FPS, 197,2 ms par image et 64 appels de dessin.
 
 Victory traduit les appels d’un titre Xbox Series vers Direct3D 12. Le 27 novembre 2026, Mirakud a franchi la cinématique puis déplacé le personnage dans la prison avec le profil Series S, Wine Sikarugir et D3DMetal 4.0 bêta 3. La capture indique 1 751,9 ms par image et 4 514 dessins par image. Une partie du visage et du cou manque à l’écran.
 

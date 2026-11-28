@@ -352,6 +352,8 @@ def run_profile(resources):
     print(run, flush=True)
     with (run / "console.txt").open("wb") as console:
         monitor = subprocess.Popen(command, env=env, stdout=console, stderr=subprocess.STDOUT, start_new_session=True)
+        from final_captures import FinalCaptures
+        captures = FinalCaptures(run)
         hud = None
 
         def stop_monitor(_signum, _frame):
@@ -368,6 +370,7 @@ def run_profile(resources):
         finally:
             if hud is not None:
                 hud.close()
+            captures.close()
             for sig, handler in handlers.items():
                 signal.signal(sig, handler)
     record["exit_code"] = rc

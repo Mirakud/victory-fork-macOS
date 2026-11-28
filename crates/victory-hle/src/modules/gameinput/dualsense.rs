@@ -6,8 +6,8 @@ use super::{
     RIGHT_STICK, UP, VIEW, X, Y,
 };
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
-use std::sync::{LazyLock, OnceLock};
+use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use windows_sys::Win32::Media::Multimedia::{
     JOY_RETURNBUTTONS, JOY_RETURNPOV, JOY_RETURNPOVCTS, JOY_RETURNR, JOY_RETURNU, JOY_RETURNV,
@@ -29,12 +29,17 @@ static WINE: LazyLock<bool> = LazyLock::new(|| {
 #[derive(Default)]
 pub(super) struct Reader {
     worker: OnceLock<Option<Worker>>,
+    native: OnceLock<Option<super::native_sony::NativeSony>>,
 }
 
 impl Reader {
     pub(super) fn read(&mut self) -> Option<PadState> {
         if !*WINE {
             return None;
+        }
+        self.native.get_or_init(super::native_sony::NativeSony::from_env);
+        if let Some(pad) = self.native.get_mut().and_then(Option::as_mut).and_then(|native| native.read()) {
+            return Some(pad);
         }
         self.worker.get_or_init(|| {
             if std::env::var_os("VICTORY_DUALSENSE").is_some_and(|value| value == "0") {
@@ -51,39 +56,33 @@ impl Reader {
 }
 
 struct Worker {
-    request: SyncSender<()>,
-    answer: Receiver<(Instant, Option<PadState>)>,
-    last: Option<(Instant, PadState)>,
+    // Dropping the reader wakes the polling thread and ends it.
+    _lifetime: Sender<()>,
+    latest: Arc<Mutex<Option<(Instant, PadState)>>>,
 }
 
 impl Worker {
     fn start(mut read: impl FnMut() -> Option<PadState> + Send + 'static) -> Option<Self> {
-        let (request, pending) = sync_channel(1);
-        let (reply, answer) = sync_channel(1);
+        let (lifetime, stop) = mpsc::channel();
+        let latest = Arc::new(Mutex::new(None));
+        let sample = Arc::clone(&latest);
         std::thread::Builder::new()
             .name("victory-dualsense".into())
-            .spawn(move || {
-                while pending.recv().is_ok() {
-                    let state = read();
-                    if reply.send((Instant::now(), state)).is_err() {
-                        break;
-                    }
+            .spawn(move || loop {
+                // WinMM can block. Only hold the shared lock to publish its result.
+                let state = read();
+                *super::lock(&sample) = state.map(|pad| (Instant::now(), pad));
+                let delay = Duration::from_millis(if state.is_some() { 8 } else { 100 });
+                if stop.recv_timeout(delay) != Err(RecvTimeoutError::Timeout) {
+                    break;
                 }
             })
             .ok()?;
-        Some(Self {
-            request,
-            answer,
-            last: None,
-        })
+        Some(Self { _lifetime: lifetime, latest })
     }
 
-    fn poll(&mut self, now: Instant) -> Option<PadState> {
-        for (at, state) in self.answer.try_iter() {
-            self.last = state.map(|pad| (at, pad));
-        }
-        let _ = self.request.try_send(());
-        self.last
+    fn poll(&self, now: Instant) -> Option<PadState> {
+        super::lock(&self.latest)
             .filter(|(at, _)| now.saturating_duration_since(*at) < Duration::from_millis(500))
             .map(|(_, pad)| pad)
     }
@@ -359,7 +358,7 @@ mod tests {
         use std::sync::mpsc::channel;
         let (started, entered) = channel();
         let (release, gate) = channel();
-        let mut worker = Worker::start(move || {
+        let worker = Worker::start(move || {
             started.send(()).unwrap();
             gate.recv().ok().flatten()
         })
@@ -385,6 +384,22 @@ mod tests {
     }
 
     #[test]
+    fn keeps_polling_the_physical_pad_between_game_readings() {
+        let (samples, published) = mpsc::channel();
+        let mut count = 0;
+        let worker = Worker::start(move || {
+            count += 1;
+            samples.send(count).ok()?;
+            Some(PadState { buttons: if count == 1 { A } else { B }, ..Default::default() })
+        }).unwrap();
+        // No game reads while the worker processes a press and a release.
+        for count in 1..=3 {
+            assert_eq!(published.recv_timeout(Duration::from_secs(2)).unwrap(), count);
+        }
+        assert_eq!(worker.poll(Instant::now()).unwrap().buttons, B);
+    }
+
+    #[test]
     #[ignore = "requires a connected DualSense exposed via Wine WinMM"]
     fn connected_wine_dualsense() {
         let mut reader = Reader::default();
@@ -397,5 +412,26 @@ mod tests {
             std::thread::sleep(Duration::from_millis(8));
         };
         eprintln!("connected DualSense: {first:?}");
+        for wait in [750, 1500, 2500] {
+            std::thread::sleep(Duration::from_millis(wait));
+            let sample = reader.read().expect("lost the physical pad between game reads");
+            eprintln!("after {wait} ms without GameInput polling: {sample:?}");
+        }
+    }
+    #[test]
+    #[ignore = "requires a connected macOS DualSense and its native helper"]
+    fn reads_connected_mac_dualsense_without_winmm() {
+        let mut native = Reader::default();
+        assert!(native.worker.set(None).is_ok());
+        for i in 0..4 {
+            let started = Instant::now();
+            let pad = loop {
+                if let Some(p) = native.read() { break p; }
+                assert!(started.elapsed() < Duration::from_secs(2), "native physical reading");
+                std::thread::sleep(Duration::from_millis(8));
+            };
+            println!("native Sony sample {i}: {pad:?}");
+            std::thread::sleep(Duration::from_millis(750));
+        }
     }
 }

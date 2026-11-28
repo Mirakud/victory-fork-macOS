@@ -85,6 +85,23 @@ PRISON = {
 }
 
 
+# Parcours Series S validé sur la copie de sauvegarde de la session 013918.
+SERIES_S = {
+    "VICTORY_PIPELINE_WORKERS": "4",
+    "VICTORY_TEXTURE_BUDGET_MB": "512",
+    "VICTORY_WORLD_TEXTURE_BUDGET_MB": "1536",
+    "VICTORY_BVH_PAGE_CACHE_MB": "768",
+    "VICTORY_PRISON_MATERIAL_TEXTURES": "1",
+    "VICTORY_TRACE_AS_HEADER": "1",
+    "VICTORY_LIST_SLOTS": "c94c4c7b5775cc2b,55e52a40b5d79b20,a885ba5d98ce46bf,1407289e381df336",
+    "VICTORY_LOG": PRISON["VICTORY_LOG"] + ",victory_gpu::texture=info,victory_gpu::capture=info,victory_gpu::pipeline=info",
+    "VICTORY_KEYS": "40:Enter,67:Enter",
+    "VICTORY_CAPTURE_TARGET_COMMANDS": "1",
+    "VICTORY_LIST_SLOTS": "c94c4c7b5775cc2b,55e52a40b5d79b20,a885ba5d98ce46bf,1407289e381df336",
+    "VICTORY_LOG": PRISON["VICTORY_LOG"] + ",victory_gpu::texture=info,victory_gpu::capture=info,victory_gpu::pipeline=info",
+}
+
+
 def sha256(path):
     with path.open("rb") as source:
         return hashlib.file_digest(source, "sha256").hexdigest()
@@ -129,13 +146,16 @@ def dualsense_presence(binary, run):
                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log)
         except OSError as error:
             print(f"Détection Sony indisponible ({error}), lecture WinMM conservée.", file=sys.stderr)
-            yield False
+            yield False, 0
             return
         stopping = threading.Event()
         watcher = None
         try:
             readable, _, _ = select.select([helper.stdout], [], [], 5)
-            ready = bool(readable and helper.stdout.readline() == b"ready\n")
+            line = helper.stdout.readline() if readable else b""
+            handshake = re.fullmatch(rb"ready(?: ([0-9]{1,5}))?\n", line)
+            port = int(handshake[1] or 0) if handshake else 0
+            ready = handshake is not None and port <= 65535
             if ready:
                 def recover_on_exit():
                     helper.wait()
@@ -155,7 +175,7 @@ def dualsense_presence(binary, run):
             else:
                 print("Détection Sony indisponible, lecture WinMM conservée.", file=sys.stderr)
                 helper.terminate()
-            yield ready
+            yield ready, port if ready else 0
         finally:
             stopping.set()
             helper.stdin.close()
@@ -194,14 +214,17 @@ def run_profile(resources):
     profiles.add_argument("--prison-profile", "--prison", action="store_true", help="réglages de la session jouable 030001, panneau shaders et mémoire gérée par macOS")
     profiles.add_argument("--prison-peau", action="store_true", help="profil de la cour avec visage et cou, entrées et un travailleur de chargement (session 124802)")
     profiles.add_argument("--intro-profile", action="store_true", help="profil expérimental Series S des pools et des lectures ; applique LOD 0,45 et seuil 2 à la copie de --data")
+    profiles.add_argument("--series-s", action="store_true", help="profil Series S, DualSense native, quatre travailleurs et 1 536 Mio de textures dans la scène")
+    p.add_argument("--bvh-scan-records", type=absolute, metavar="DOSSIER", help="scans BVH privés préparés pour ce titre")
+    p.add_argument("--belobug-cascade-pack", type=absolute, metavar="FICHIER", help="pack privé compatible des shaders d’ombres en cascades")
     p.add_argument("--pipeline-manifest", type=absolute, help="liste privée de clés à préparer")
     p.add_argument("--perf-hud", action="store_true", help="afficher les FPS mesurés et la mémoire de Victory au-dessus du jeu")
     p.add_argument("--preview", action="store_true", help="afficher la commande sans créer de dossier ni lancer Wine")
     args = p.parse_args()
-    for path in (args.victory, args.title, args.shader_pack, args.shader_overlay, args.pipeline_manifest, args.shader_names):
+    for path in (args.victory, args.title, args.shader_pack, args.shader_overlay, args.pipeline_manifest, args.shader_names, args.belobug_cascade_pack):
         if path and not path.is_file():
             p.error(f"fichier manquant : {path}")
-    for path in (args.bottle, args.engine, args.data, args.shader_store):
+    for path in (args.bottle, args.engine, args.data, args.shader_store, args.bvh_scan_records):
         if path and not path.is_dir():
             p.error(f"dossier manquant : {path}")
     if args.data and (args.output == args.data or args.data in args.output.parents):
@@ -211,7 +234,7 @@ def run_profile(resources):
     if len(args.prewarm_pipeline) > 8 or len(args.required_pipeline) > 8:
         p.error("huit clés au maximum pour chaque sélection de pipelines")
     settings = None
-    prison = args.prison_profile or args.prison_peau
+    prison = args.prison_profile or args.prison_peau or args.series_s
     if prison:
         args.shader_ab = True
         args.capture_shader_misses = bool(args.shader_pack)
@@ -250,17 +273,34 @@ def run_profile(resources):
         config.update(PRISON)
         config["VICTORY_CONFIRM_FILE"] = drive_z(run / "confirm")
         config["VICTORY_CAPTURE_FILE"] = drive_z(run / "capture")
+    if args.series_s:
+        config.update(SERIES_S)
+        config["VICTORY_ROOM_LIGHT_FILE"] = drive_z(run / "lampes-cellule")
+        config["VICTORY_CAPTURE_TARGETS_FILE"] = drive_z(run / "capture-targets")
     if args.prison_peau:
         config.pop("VICTORY_TRACE_STALLED_MESH")
         config.update(VICTORY_PARALLEL_CARD_DIGEST="1", VICTORY_CARD_REHASH_RUNS="1",
                       VICTORY_PED_MATERIAL_TEXTURES="1", VICTORY_MEMORY_MAP="0", VICTORY_STORAGE_WORKERS="1",
                       VICTORY_KEYS="35:Enter", VICTORY_CAPTURE_TARGETS_FILE=drive_z(run / "capture-targets"))
-        input_socket = resources.enter_context(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
-        input_socket.bind(("127.0.0.1", 0))
-        input_socket.setblocking(False)
-        config["VICTORY_INPUT_HUD_PORT"] = str(input_socket.getsockname()[1])
-        if args.preview or resources.enter_context(dualsense_presence(hud_binary, run)):
+    if args.prison_peau or args.series_s:
+        if args.preview:
+            hud_port, ready, sony_port = 0, True, 0
+        else:
+            input_socket = resources.enter_context(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
+            input_socket.bind(("127.0.0.1", 0))
+            input_socket.setblocking(False)
+            hud_port = input_socket.getsockname()[1]
+            ready, sony_port = resources.enter_context(dualsense_presence(hud_binary, run))
+        config["VICTORY_INPUT_HUD_PORT"] = str(hud_port)
+        if ready:
             config["VICTORY_DUALSENSE_PRESENT_FILE"] = drive_z(run / "sony-present")
+            if args.series_s and (sony_port or args.preview):
+                config["VICTORY_DUALSENSE_NATIVE_PORT"] = str(sony_port)
+    if args.bvh_scan_records:
+        config.update(VICTORY_BVH_SCAN_RECORDS=drive_z(args.bvh_scan_records),
+                      VICTORY_BVH_BUILDER="1", VICTORY_BVH_QUARANTINE="1")
+    if args.belobug_cascade_pack:
+        config["VICTORY_BELOBUG_CASCADE_PACK"] = drive_z(args.belobug_cascade_pack)
     if args.shader_store:
         config["VICTORY_READONLY_SHADER_STORE"] = drive_z(args.shader_store)
     if args.shader_names and args.shader_ab and not args.preview:
@@ -299,10 +339,13 @@ def run_profile(resources):
         return 0
     env = dict(os.environ, UNCORK_SIKARUGIR_ENGINE=str(args.engine), VICTORY_MAC_BOTTLE=str(args.bottle))
     record = {"mode": "run", "command": command, "perf_hud": args.perf_hud, "shader_ab": args.shader_ab,
-              "intro_profile": args.intro_profile, "prison_profile": args.prison_profile, "prison_peau": args.prison_peau, "capture_shader_misses": args.capture_shader_misses}
-    if args.prison_peau:
+              "intro_profile": args.intro_profile, "prison_profile": args.prison_profile, "prison_peau": args.prison_peau, "series_s": args.series_s, "capture_shader_misses": args.capture_shader_misses}
+    if args.series_s or args.prison_peau:
         record["victory_sha256"] = sha256(args.victory)
-    for name, pack in (("readonly_shader_pack", args.shader_pack), ("readonly_shader_overlay", args.shader_overlay)):
+    if args.bvh_scan_records:
+        record["bvh_scan_records"] = str(args.bvh_scan_records)
+    for name, pack in (("readonly_shader_pack", args.shader_pack), ("readonly_shader_overlay", args.shader_overlay),
+                       ("belobug_cascade_pack", args.belobug_cascade_pack), ("pipeline_manifest", args.pipeline_manifest)):
         if pack:
             record[name] = str(pack)
             record[name + "_sha256"] = sha256(pack)

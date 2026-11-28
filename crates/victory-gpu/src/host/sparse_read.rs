@@ -207,11 +207,12 @@ pub(super) fn take_grouped_counts() -> [u64; 4] {
 }
 
 type SavedRuns = (Key, Arc<[Range<usize>]>);
-struct ReadRuns([Mutex<Option<SavedRuns>>; 256]);
+const RUN_BUCKETS: usize = 4096;
+struct ReadRuns([Mutex<Option<SavedRuns>>; RUN_BUCKETS]);
 
 impl ReadRuns {
     const fn new() -> Self {
-        Self([const { Mutex::new(None) }; 256])
+        Self([const { Mutex::new(None) }; RUN_BUCKETS])
     }
 
     fn bucket(&self, key: Key) -> &Mutex<Option<SavedRuns>> {
@@ -253,11 +254,7 @@ impl ReadRuns {
             }
             ok
         };
-        let (mut attempts, mut successes, mut bytes, mut queries) = (0, 0, 0, 0);
-        let mut current_map = |at| {
-            queries += 1;
-            query(at)
-        };
+        let (mut attempts, mut successes, mut bytes) = (0, 0, 0);
         let mut complete = true;
         let mut skipped = 0;
         let mut visit = |start, end, bulk| {
@@ -277,7 +274,7 @@ impl ReadRuns {
                 start,
                 size,
                 true,
-                &mut current_map,
+                &mut query,
                 &mut checked_read,
                 &mut zero,
             );
@@ -291,10 +288,10 @@ impl ReadRuns {
             cursor = run.end;
         }
         visit(cursor, end, false);
-        for (counter, n) in GROUPED.iter().zip([attempts, successes, bytes, queries]) {
+        for (counter, n) in GROUPED.iter().zip([attempts, successes, bytes]) {
             counter.fetch_add(n, Ordering::Relaxed);
         }
-        let keep = !complete && !runs.is_empty() && runs.len() <= MAX_RUNS;
+        let keep = !runs.is_empty() && runs.len() <= MAX_RUNS;
         if keep && previous.as_deref() != Some(runs.as_slice()) {
             *bucket.lock().unwrap_or_else(|e| e.into_inner()) = Some((key, runs.into()));
         } else if !keep && previous.is_some() {
@@ -322,10 +319,65 @@ pub(super) fn walk_source(
         && *ENABLED
             .get_or_init(|| std::env::var_os("VICTORY_SPARSE_READ_RUNS").is_some_and(|v| v == "1"))
     {
-        RUNS.walk(address, len, query, read, zero)
+        walk_windows(&RUNS, address, len, query, read, zero)
     } else {
         walk(address, len, dedup, query, read, zero)
     }
+}
+
+// Overlapping requests share the complete, aligned megabytes between their
+// endpoints. The table holds only the bounds of earlier successful reads.
+// Every hit re-reads those bytes and every gap examines the current map.
+fn walk_windows(
+    runs: &ReadRuns,
+    address: usize,
+    len: usize,
+    mut query: impl FnMut(usize) -> Option<(usize, bool)>,
+    mut read: impl FnMut(usize, usize) -> bool,
+    mut zero: impl FnMut(usize, usize),
+) -> (bool, u64) {
+    const WINDOW: usize = 1 << 20;
+    let Some(end) = address.checked_add(len) else {
+        return walk(address, len, true, query, read, zero);
+    };
+    let mut cursor = address;
+    if len == 0 {
+        return (true, 0);
+    }
+    let mut observed = query(address)
+        .map(|(length, readable)| (address, address.saturating_add(length), readable));
+    let (mut complete, mut skipped, mut queries) = (true, 0, 1);
+    while cursor < end {
+        // A single VM query can describe a hole spanning many windows.
+        // Honor its full extent inside this copy, just as walk() does.
+        if let Some((_, stop, false)) = observed
+            && cursor < stop
+        {
+            let to = stop.min(end);
+            zero(cursor, to - cursor);
+            complete = false;
+            cursor = to;
+            continue;
+        }
+        let n = (WINDOW - cursor % WINDOW).min(end - cursor);
+        let mut current = |at| {
+            if let Some((start, stop, can_read)) = observed
+                && start <= at && at < stop
+            {
+                return Some((stop - at, can_read));
+            }
+            queries += 1;
+            let region = query(at);
+            observed = region.map(|(length, can_read)| (at, at.saturating_add(length), can_read));
+            region
+        };
+        let (readable, retries) = runs.walk(cursor, n, &mut current, &mut read, &mut zero);
+        complete &= readable;
+        skipped += retries;
+        cursor += n;
+    }
+    GROUPED[3].fetch_add(queries, Ordering::Relaxed);
+    (complete, skipped)
 }
 
 #[cfg(test)]
@@ -367,6 +419,49 @@ mod tests {
     }
 
     #[test]
+    fn overlapping_windows_read_new_mappings_and_contents() {
+        const WINDOW: usize = 1 << 20;
+        let logical = 4 * WINDOW;
+        let mut output = vec![0; logical];
+        let runs = ReadRuns::new();
+        for (start, end, hole, value) in [
+            (13, logical - 61, 1, 0x32),
+            (PAGE + 3, logical - PAGE, 4, 0x57),
+            (WINDOW + 7, logical - 81, 5, 0xaa),
+        ] {
+            output.fill(0xee);
+            let storage = RefCell::new(&mut output);
+            let len = end - start;
+            let readable = |at: usize| at / LARGE % 13 != hole;
+            let (complete, _) = walk_windows(
+                &runs,
+                start,
+                len,
+                |at| Some((LARGE - at % LARGE, readable(at))),
+                |at, n| {
+                    let mut bytes = storage.borrow_mut();
+                    // A failed kernel copy can have overwritten its prefix.
+                    for page in (at / PAGE)..=(at + n - 1) / PAGE {
+                        let lo = at.max(page * PAGE);
+                        let hi = (at + n).min((page + 1) * PAGE);
+                        if !readable(lo) {
+                            return false;
+                        }
+                        bytes[lo..hi].fill(value);
+                    }
+                    true
+                },
+                |at, n| storage.borrow_mut()[at..at + n].fill(0),
+            );
+            assert!(!complete);
+            assert!(output[..start].iter().chain(&output[end..]).all(|&v| v == 0xee));
+            for (i, b) in output[start..end].iter().enumerate() {
+                assert_eq!(*b, if readable(start + i) { value } else { 0 });
+            }
+        }
+    }
+
+    #[test]
     fn saved_runs_recheck_holes_splits_and_remapped_values() {
         let cache = ReadRuns::new();
         let mut pages = [true; 16];
@@ -379,7 +474,7 @@ mod tests {
         assert_eq!(exercise(&cache, &pages, 44), (1, 2));
         pages.fill(true);
         exercise(&cache, &pages, 55);
-        assert!(cache.bucket((0, 16 * PAGE)).lock().unwrap().is_none());
+        assert_eq!(cache.bucket((0, 16 * PAGE)).lock().unwrap().as_ref().unwrap().1.as_ref(), &[0..16 * PAGE]);
     }
 
     #[test]

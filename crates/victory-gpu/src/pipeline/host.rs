@@ -35,6 +35,23 @@ pub(crate) struct GraphicsState {
     samples: DXGI_SAMPLE_DESC,
 }
 
+#[cfg(feature = "diagnostics")]
+impl GraphicsState {
+    pub(super) fn matches_room_light_volume(&self) -> bool {
+        let stencil = &self.depth;
+        let blend = self.blend.RenderTarget[0];
+        self.targets.NumRenderTargets == 1
+            && self.targets.RTFormats[0].0 == 10 // RGBA16F light accumulation
+            && blend.BlendEnable.as_bool()
+            && blend.SrcBlend == D3D12_BLEND_ONE && blend.DestBlend == D3D12_BLEND_ONE
+            && blend.BlendOp == D3D12_BLEND_OP_ADD
+            && stencil.StencilEnable.as_bool()
+            && stencil.StencilReadMask == 0x18 && stencil.StencilWriteMask == 0
+            && stencil.FrontFace.StencilFunc == D3D12_COMPARISON_FUNC_EQUAL
+            && stencil.BackFace.StencilFunc == D3D12_COMPARISON_FUNC_EQUAL
+    }
+}
+
 impl Default for GraphicsState {
     fn default() -> Self {
         let target = D3D12_RENDER_TARGET_BLEND_DESC {

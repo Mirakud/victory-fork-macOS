@@ -7,6 +7,7 @@ import Carbon.HIToolbox
 import CoreGraphics
 import Darwin
 import IOKit.hid
+import GameController
 
 private struct Sample: Decodable {
     var game_pid: pid_t?
@@ -712,7 +713,7 @@ private extension ShaderControls {
 }
 
 private struct InputPacket: Decodable {
-    enum Source: String, Decodable { case keyboard, xinput, dualsense }
+    enum Source: String, Decodable { case keyboard, xinput, dualsense, nativeSony }
     let v: Int
     let source: Source
     let focus: Bool
@@ -741,10 +742,10 @@ private struct InputHistory {
         guard packet.v == 1, packet.axes.count == 6,
               packet.axes.prefix(4).allSatisfy({ (-100...100).contains($0) }),
               packet.axes.suffix(2).allSatisfy({ (0...100).contains($0) }) else { return }
-        if !packet.focus || packet.source != last?.source || now - updated >= Self.timeout { self = InputHistory() }
-        guard packet.focus else { return }
+        if packet.focus != last?.focus || packet.source != last?.source || now - updated >= Self.timeout { self = InputHistory() }
+        guard packet.focus || packet.source != .keyboard else { return }
         let until = now + Self.flash
-        for key in packet.keys where !(last?.keys.contains(key) ?? false) { keyFlash[key] = until }
+        for key in packet.keys where packet.focus && !(last?.keys.contains(key) ?? false) { keyFlash[key] = until }
         let pressed = packet.buttons & ~(last?.buttons ?? 0)
         for index in 0..<14 {
             let bit = UInt16(1) << index
@@ -759,7 +760,7 @@ private struct InputHistory {
 
     func reading(at now: TimeInterval) -> InputReading? {
         guard let last, now - updated < Self.timeout else { return nil }
-        var keys = Set(last.keys)
+        var keys = last.focus ? Set(last.keys) : []
         for (key, until) in keyFlash where until > now { keys.insert(key) }
         var buttons = last.buttons
         for (bit, until) in buttonFlash where until > now { buttons |= bit }
@@ -819,7 +820,12 @@ private final class InputView: NSView {
             text.draw(at: NSPoint(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2), withAttributes: attrs)
         }
         title("Clavier", x: 10)
-        let padName = reading.source == .dualsense ? "DualSense" : (reading.source == .xinput ? "Manette Xbox" : "Manette émulée")
+        let padName = switch reading.source {
+        case .nativeSony: "DualSense · macOS"
+        case .dualsense: "DualSense"
+        case .xinput: "Manette Xbox"
+        case .keyboard: "Manette émulée"
+        }
         title(padName, x: 231)
         func key(_ code: UInt8, _ label: String, _ x: CGFloat, _ y: CGFloat, _ width: CGFloat = 16) {
             tile(label, x: x, y: y, width: width, amount: reading.keys.contains(code) ? 1 : 0)
@@ -841,7 +847,7 @@ private final class InputView: NSView {
         key(39, "→", 202, 101)
         NSColor(white: 1, alpha: 0.18).setFill()
         NSBezierPath(rect: NSRect(x: 224, y: 10, width: 0.5, height: 112)).fill()
-        let sony = reading.source == .dualsense
+        let sony = reading.source == .dualsense || reading.source == .nativeSony
         func button(_ index: Int, _ label: String, _ x: CGFloat, _ y: CGFloat, width: CGFloat = 17, round: Bool = false) {
             tile(label, x: x, y: y, width: width, height: 16, amount: reading.buttons & (UInt16(1) << index) != 0 ? 1 : 0, round: round)
         }
@@ -884,13 +890,23 @@ private final class InputView: NSView {
 private final class InputOverlay: NSPanel {
     let inputView = InputView(frame: NSRect(origin: .zero, size: InputView.size))
     private var history = InputHistory()
+    private var nativeHistory: InputHistory?
+    private let nativeSample: () -> NativeSonySample?
+    private var nativeTimer: DispatchSourceTimer?
+    // Optional local diagnostic. Do not record keyboard keys or axes.
+    private let padProof = ProcessInfo.processInfo.environment["VICTORY_HUD_PAD_PROOF"] == "1"
+    private var proofState: String?
+    private var proofAt: TimeInterval = 0
+
     private var anchor: NSPoint?
     private var source: DispatchSourceRead?
     private var pulse: Timer?
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 
-    init(descriptor: Int32) {
+    init(descriptor: Int32, nativeSample: @escaping () -> NativeSonySample? = NativeSonySample.current) {
+        self.nativeSample = nativeSample
+        GCController.shouldMonitorBackgroundEvents = true
         super.init(contentRect: NSRect(origin: .zero, size: InputView.size), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         isOpaque = false
         backgroundColor = .clear
@@ -907,17 +923,43 @@ private final class InputOverlay: NSPanel {
         source.setCancelHandler { Darwin.close(descriptor) }
         self.source = source
         source.resume()
+        // The title can stop polling or sending while loading. Keep the hover
+        // panel responsive from macOS without synthesizing input for the game.
+        let tick = DispatchSource.makeTimerSource(queue: .main)
+        tick.schedule(deadline: .now(), repeating: .milliseconds(16), leeway: .milliseconds(3))
+        tick.setEventHandler { [weak self] in
+            guard let self, self.anchor != nil else { return }
+            self.displayReading()
+        }
+        nativeTimer = tick
+        tick.resume()
     }
 
-    deinit { source?.cancel() }
+    deinit { source?.cancel(); nativeTimer?.cancel() }
 
     func place(at point: NSPoint?) {
         anchor = point
         displayReading()
     }
 
-    private func displayReading() {
-        let reading = history.reading(at: ProcessInfo.processInfo.systemUptime)
+    fileprivate func displayReading(at now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        let game = history.reading(at: now)
+        var reading = game
+        if game == nil || game?.source == .keyboard {
+            if let native = nativeSample() {
+                let packet = InputPacket(v: 1, source: .nativeSony, focus: false, keys: [], buttons: native.buttons,
+                                         axes: native.axes.map { Int(($0 * 100).rounded()) })
+                if nativeHistory == nil { nativeHistory = InputHistory() }
+                nativeHistory?.receive(packet, now: now)
+                if let physical = nativeHistory?.reading(at: now) {
+                    reading = InputReading(source: .nativeSony, keys: game?.keys ?? [], buttons: physical.buttons, axes: physical.axes)
+                }
+            } else {
+                nativeHistory = nil
+            }
+        } else {
+            nativeHistory = nil
+        }
         inputView.reading = reading
         guard reading != nil, let anchor else {
             if isVisible { orderOut(nil) }
@@ -936,7 +978,17 @@ private final class InputOverlay: NSPanel {
             if count < 0 { break }
             guard count > 0, count < bytes.count,
                   let packet = try? decoder.decode(InputPacket.self, from: Data(bytes.prefix(count))) else { continue }
-            history.receive(packet, now: ProcessInfo.processInfo.systemUptime)
+            let now = ProcessInfo.processInfo.systemUptime
+            history.receive(packet, now: now)
+            if padProof {
+                let buttons = packet.source == .keyboard ? 0 : packet.buttons
+                let state = "source=\(packet.source.rawValue) focus=\(packet.focus) boutons=\(buttons)"
+                if state != proofState || now - proofAt >= 10 {
+                    FileHandle.standardError.write(Data("HUD manette t=\(Int(now * 1000)) \(state)\n".utf8))
+                    proofState = state
+                    proofAt = now
+                }
+            }
         }
         displayReading()
         // A single one-shot covers a short tap between the renderer's regular heartbeats.
@@ -1106,7 +1158,7 @@ private func selfTestInput(output: URL) throws {
     precondition(HUDOptions(["--input-fd", "1"][...]) == nil && HUDOptions(["--input-fd"][...]) == nil)
     let pressed = Data(#"{"v":1,"source":"dualsense","focus":true,"keys":[87,68,13],"buttons":1028,"axes":[75,90,0,0,0,84]}"#.utf8)
     let released = Data(#"{"v":1,"source":"dualsense","focus":true,"keys":[],"buttons":0,"axes":[0,0,0,0,0,0]}"#.utf8)
-    let idle = Data(#"{"v":1,"source":"dualsense","focus":false,"keys":[],"buttons":0,"axes":[0,0,0,0,0,0]}"#.utf8)
+    let idle = Data(#"{"v":1,"source":"dualsense","focus":false,"keys":[87],"buttons":4,"axes":[0,0,0,0,0,0]}"#.utf8)
     let decoder = JSONDecoder()
     var history = InputHistory()
     precondition(history.reading(at: 1) == nil)
@@ -1117,7 +1169,7 @@ private func selfTestInput(output: URL) throws {
     precondition(history.reading(at: 1.2)?.keys == [] && history.reading(at: 1.2)?.axes == [0,0,0,0,0,0])
     precondition(history.reading(at: 2.3) == nil)
     history.receive(try decoder.decode(InputPacket.self, from: idle), now: 1.1)
-    precondition(history.reading(at: 1.1) == nil)
+    precondition(history.reading(at: 1.1)?.buttons == 4 && history.reading(at: 1.21)?.keys.isEmpty == true)
     let rx = socket(AF_INET, SOCK_DGRAM, 0), tx = socket(AF_INET, SOCK_DGRAM, 0)
     guard rx >= 0 && tx >= 0 else { throw CocoaError(.fileReadUnknown) }
     defer { Darwin.close(tx) }
@@ -1126,7 +1178,8 @@ private func selfTestInput(output: URL) throws {
     address.sin_family = sa_family_t(AF_INET)
     address.sin_addr.s_addr = inet_addr("127.0.0.1")
     var length = socklen_t(MemoryLayout<sockaddr_in>.size)
-    let overlay = InputOverlay(descriptor: rx)
+    var native: NativeSonySample?
+    let overlay = InputOverlay(descriptor: rx, nativeSample: { native })
     precondition(!overlay.canBecomeKey && !overlay.canBecomeMain && overlay.ignoresMouseEvents)
     try withUnsafeMutablePointer(to: &address) { local in
         try local.withMemoryRebound(to: sockaddr.self, capacity: 1) { ptr in
@@ -1147,6 +1200,28 @@ private func selfTestInput(output: URL) throws {
     view.cacheDisplay(in: view.bounds, to: bitmap)
     guard let png = bitmap.representation(using: .png, properties: [:]) else { throw CocoaError(.fileWriteUnknown) }
     try png.write(to: output, options: .atomic)
+    let silent = ProcessInfo.processInfo.systemUptime + 4
+    native = NativeSonySample(buttons: 8, axes: [0, 0, 0, 0, 0, 1])
+    overlay.displayReading(at: silent)
+    precondition(view.reading?.source == .nativeSony && view.reading?.buttons == 8 && view.reading?.axes[5] == 100)
+    precondition(view.reading?.keys.isEmpty == true)
+    native = NativeSonySample(buttons: 0, axes: [0, 0, 0, 0, 0, 0])
+    overlay.displayReading(at: silent + 1)
+    precondition(view.reading?.buttons == 0 && view.reading?.axes[5] == 0)
+    native = nil
+    overlay.displayReading(at: silent + 1.01)
+    precondition(view.reading == nil)
+    // The next real game packet regains priority, even with a native pad.
+    native = NativeSonySample(buttons: 8, axes: [0, 0, 0, 0, 0, 1])
+    let sent = withUnsafePointer(to: &address) { local in
+        local.withMemoryRebound(to: sockaddr.self, capacity: 1) { ptr in
+            released.withUnsafeBytes { sendto(tx, $0.baseAddress, $0.count, 0, ptr, length) }
+        }
+    }
+    precondition(sent == released.count)
+    overlay.drain(rx)
+    precondition(view.reading?.source == .dualsense && view.reading?.axes[5] != 100)
+    print("HUD DualSense · quatre secondes sans émission du jeu, appui, gâchette, relâchement et déconnexion macOS, puis reprise de Victory vérifiés")
     print("HUD entrées · UDP local, clavier simultané, DualSense, axes, gâchette, tap, perte de focus et expiration vérifiés")
 }
 
@@ -1182,6 +1257,86 @@ private func selfTest(output: URL) throws {
     guard let png = bitmap.representation(using: .png, properties: [:]) else { throw CocoaError(.fileWriteUnknown) }
     try png.write(to: output, options: .atomic)
     print("mirakud | FPS \(values.fps) | CPU Victory \(values.cpu) | RAM Victory \(values.ram) | Image \(values.frame) | Attente GPU \(values.gpu) | Copies \(values.copies) | \(bitmap.pixelsWide) × \(bitmap.pixelsHigh)")
+}
+
+private struct NativeSonySample {
+    let buttons: UInt16
+    let axes: [Float]
+
+    static func current() -> Self? {
+        guard let p = GCController.controllers().compactMap({ $0.extendedGamepad as? GCDualSenseGamepad }).first else { return nil }
+        var buttons: UInt16 = 0
+        let inputs: [GCControllerButtonInput?] = [p.buttonMenu, p.buttonOptions, p.buttonA, p.buttonB, p.buttonX, p.buttonY,
+            p.dpad.up, p.dpad.down, p.dpad.left, p.dpad.right, p.leftShoulder, p.rightShoulder,
+            p.leftThumbstickButton, p.rightThumbstickButton]
+        for (index, button) in inputs.enumerated() where button?.isPressed == true { buttons |= UInt16(1) << index }
+        let axes = [p.leftThumbstick.xAxis.value, p.leftThumbstick.yAxis.value, p.rightThumbstick.xAxis.value,
+                p.rightThumbstick.yAxis.value, p.leftTrigger.value, p.rightTrigger.value]
+        return Self(buttons: buttons, axes: axes)
+    }
+}
+
+// The nonce lets GameInput age each reading from the time it requested it.
+private final class NativeSonyServer {
+    let port: UInt16
+    private let source: DispatchSourceRead
+    private let proof = ProcessInfo.processInfo.environment["VICTORY_HUD_PAD_PROOF"] == "1"
+    private var lastButtons: UInt16?
+    private var lastProof = -Double.infinity
+
+    init() throws {
+        GCController.shouldMonitorBackgroundEvents = true
+        let fd = socket(AF_INET, SOCK_DGRAM, 0)
+        guard fd >= 0 else { throw POSIXError(.EIO) }
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let bound = withUnsafeMutablePointer(to: &address) { local in
+            local.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(fd, $0, length) == 0 && getsockname(fd, $0, &length) == 0
+            }
+        }
+        guard bound else { close(fd); throw POSIXError(.EADDRNOTAVAIL) }
+        port = UInt16(bigEndian: address.sin_port)
+        source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: .main)
+        source.setEventHandler { [weak self] in self?.respond(fd) }
+        source.setCancelHandler { close(fd) }
+        source.resume()
+    }
+
+    deinit { source.cancel() }
+
+    private func respond(_ fd: Int32) {
+        var peer = sockaddr_in()
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        var request = [UInt8](repeating: 0, count: 64)
+        withUnsafeMutablePointer(to: &peer) { local in
+            local.withMemoryRebound(to: sockaddr.self, capacity: 1) { caller in
+                let n = request.withUnsafeMutableBytes { recvfrom(fd, $0.baseAddress, $0.count, MSG_DONTWAIT, caller, &length) }
+                guard n == 12, request.prefix(4).elementsEqual("DSQ1".utf8) else { return }
+                let pad = NativeSonySample.current()
+                var reply = Array("DSR1".utf8) + request[4..<12] + [pad == nil ? 0 : 1]
+                let buttons = pad?.buttons ?? 0
+                let axes = pad?.axes ?? [Float](repeating: 0, count: 6)
+                func word(_ v: UInt16) { reply.append(UInt8(truncatingIfNeeded: v)); reply.append(UInt8(v >> 8)) }
+                word(buttons)
+                for value in axes { word(UInt16(bitPattern: Int16((max(-1, min(1, value)) * 32767).rounded()))) }
+                let sent = reply.withUnsafeBytes { sendto(fd, $0.baseAddress, $0.count, 0, caller, length) }
+                if proof && sent == reply.count {
+                    let now = ProcessInfo.processInfo.systemUptime
+                    let physical = pad == nil ? nil : buttons
+                    if physical != lastButtons || now - lastProof >= 10 {
+                        let message = "DualSense native t=\(Int(now * 1000)) connectée=\(pad != nil) boutons=\(buttons)\n"
+                        FileHandle.standardError.write(Data(message.utf8))
+                        lastButtons = physical
+                        lastProof = now
+                    }
+                }
+            }
+        }
+    }
 }
 
 private final class SonyPresence {
@@ -1244,8 +1399,9 @@ private final class SonyPresence {
         lifetime.setEventHandler { CFRunLoopStop(CFRunLoopGetMain()) }
         lifetime.resume()
         defer { lifetime.cancel() }
-        FileHandle.standardOutput.write(Data("ready\n".utf8))
-        withExtendedLifetime(manager) { CFRunLoopRun() }
+        let native = try? NativeSonyServer()
+        FileHandle.standardOutput.write(Data("ready \(native?.port ?? 0)\n".utf8))
+        withExtendedLifetime((manager, native)) { CFRunLoopRun() }
         if let failure { throw failure }
     }
 

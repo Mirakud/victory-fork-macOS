@@ -141,6 +141,29 @@ fn fallback_buttons(held: impl Fn(u8) -> bool) -> PadState {
     }
 }
 
+/// Overlay explicit diagnostic commands without disconnecting a physical pad.
+/// Active physical sticks and triggers retain control of their axes.
+#[cfg(feature = "diagnostics")]
+fn apply_pad_request(pad: &mut PadState, keys: &[u8]) {
+    if keys.is_empty() {
+        return;
+    }
+    let request = fallback_buttons(|vk| keys.contains(&vk));
+    pad.buttons |= request.buttons;
+    for (axis, requested) in [
+        (&mut pad.left_x, request.left_x),
+        (&mut pad.left_y, request.left_y),
+        (&mut pad.right_x, request.right_x),
+        (&mut pad.right_y, request.right_y),
+        (&mut pad.left_trigger, request.left_trigger),
+        (&mut pad.right_trigger, request.right_trigger),
+    ] {
+        if requested != 0.0 && axis.abs() < 0.12 {
+            *axis = requested;
+        }
+    }
+}
+
 #[repr(C)]
 struct Table<const N: usize>([*const (); N]);
 // SAFETY: function addresses only.
@@ -1083,6 +1106,8 @@ pub(crate) fn module() -> HleModule {
 
 #[cfg(windows)]
 mod dualsense;
+#[cfg(windows)]
+mod native_sony;
 #[cfg(any(windows, test))]
 mod input_hud;
 
@@ -1181,11 +1206,7 @@ mod host {
             self.hud.pad = physical_pad;
             #[cfg(feature = "diagnostics")]
             if let Some(pad) = pads[0].as_mut() {
-                for vk in scripted() {
-                    if let Some(&(_, button)) = super::FALLBACK_BUTTONS.iter().find(|(key, _)| *key == vk) {
-                        pad.buttons |= button;
-                    }
-                }
+                super::apply_pad_request(pad, &scripted());
             }
             pads
         }
@@ -1576,6 +1597,17 @@ mod tests {
         let rest = current(hub, GAMEPAD_KIND, FALLBACK).unwrap();
         assert_eq!(pad(rest), PadState::default());
         release(rest);
+    }
+
+    #[cfg(feature = "diagnostics")]
+    #[test]
+    fn diagnostic_camera_keeps_the_connected_pad_and_real_stick_input() {
+        let mut pad = PadState { buttons: X, left_y: 0.7, right_x: 0.02, ..Default::default() };
+        apply_pad_request(&mut pad, b"JSA");
+        assert_eq!((pad.buttons, pad.left_y, pad.right_x), (X | A, 0.7, -1.0));
+        pad.right_x = 0.5;
+        apply_pad_request(&mut pad, b"J");
+        assert_eq!(pad.right_x, 0.5);
     }
 
     #[test]

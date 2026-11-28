@@ -2082,6 +2082,26 @@ fn element_size(desc: &D3D12_SHADER_RESOURCE_VIEW_DESC) -> u64 {
     }
 }
 
+/// The console GPU address recorded directly in a ray-tracing SRV. There is
+/// no backing resource object or size in this kind of view.
+pub(crate) fn acceleration_structure_address(view: &View) -> Option<u64> {
+    let View::Shader(0, Some(words)) = view else { return None };
+    let desc = srv_desc(words);
+    if desc.ViewDimension != D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE {
+        return None;
+    }
+    // SAFETY: the dimension selects this union member.
+    let address = unsafe { desc.Anonymous.RaytracingAccelerationStructure.Location };
+    (address != 0).then_some(address)
+}
+
+/// Address dwords read from a descriptor by a translated shader. An
+/// acceleration structure supplies its own address, an ordinary buffer
+/// supplies the address of the first element its view includes.
+pub(crate) fn view_address(view: &View) -> Option<u64> {
+    acceleration_structure_address(view).or_else(|| buffer_range(view).map(|(address, _)| address))
+}
+
 /// The title memory a buffer shader or unordered access view reads: its
 /// address and length.
 pub(crate) fn buffer_range(view: &View) -> Option<(u64, u64)> {
@@ -3090,6 +3110,34 @@ fn null_view(at: D3D12_CPU_DESCRIPTOR_HANDLE) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raytracing_srv_supplies_its_64_bit_location_without_a_resource() {
+        let mut words = [0, 11, 0x1688, 0, 0x9d4ce100, 1, 0, 0, 0, 0];
+        let view = View::Shader(0, Some(words));
+        assert_eq!(view_address(&view), Some(0x1_9d4c_e100));
+        assert_eq!(buffer_range(&view), None);
+        // A null AS and a null ordinary SRV have no address.
+        words[4..6].fill(0);
+        assert_eq!(view_address(&View::Shader(0, Some(words))), None);
+        words[1] = 1;
+        words[4] = 256;
+        assert_eq!(view_address(&View::Shader(0, Some(words))), None);
+        assert_eq!(view_address(&View::Shader(0, None)), None);
+        // Existing structured views still offset the base by FirstElement.
+        let mut resource = [0; 14];
+        resource[0] = 1;
+        let mut desc = [0; 16];
+        desc[1] = 1;
+        desc[4] = 3;
+        desc[6] = 8;
+        desc[7] = 16;
+        desc[10] = 0x5000_0000;
+        desc[11] = 2;
+        let view = View::Placed(false, resource, desc);
+        assert_eq!(acceleration_structure_address(&view), None);
+        assert_eq!(view_address(&view), Some(0x2_5000_0030));
+    }
 
     /// A null texture UAV keeps the title's dimension (3D for the world's
     /// wind field), and is 2D when the title names none.

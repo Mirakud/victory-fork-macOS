@@ -1502,6 +1502,27 @@ pub(crate) fn host_made<'a>(
     Some(unsafe { &*std::ptr::from_ref(&host.texture) })
 }
 
+/// Optional second ceiling for streamed textures after the first 3D scene.
+#[cfg(windows)]
+static WORLD_TEXTURE_LIMIT: std::sync::LazyLock<Option<u64>> = std::sync::LazyLock::new(|| {
+    std::env::var("VICTORY_WORLD_TEXTURE_BUDGET_MB").ok()?.parse::<u64>().ok()?.checked_mul(1 << 20)
+});
+#[cfg(windows)]
+static WORLD_TEXTURES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(windows)]
+pub(crate) fn allow_world_textures(total_draws: u64) {
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    let Some(limit) = *WORLD_TEXTURE_LIMIT else { return; };
+    if WORLD_TEXTURES.load(Relaxed) { return; }
+    static PREVIOUS: AtomicU64 = AtomicU64::new(0);
+    let draws = total_draws.saturating_sub(PREVIOUS.swap(total_draws, Relaxed));
+    if draws >= 500 && !WORLD_TEXTURES.swap(true, Relaxed) {
+        tracing::info!(target: "victory_gpu::memory_watch", limit_mib = limit >> 20, draws,
+                       "enabling the in-scene texture budget");
+    }
+}
+
 /// Whether more host copies of textures the title fills may be made for
 /// shaders that pick textures by index (`draw.rs` `heap_textures`): always
 /// up to `FLOOR` bytes of them, beyond that while the card's memory in use
@@ -1522,7 +1543,12 @@ pub(crate) fn room() -> bool {
     // (With the tiles of the copies made level by level, whose own bytes
     // count as none: `crate::tiles`.)
     let filled = KINDS[1].load(Relaxed) + crate::tiles::given_total();
-    if let Some(limit) = limit {
+    if WORLD_TEXTURES.load(Relaxed) {
+        if WORLD_TEXTURE_LIMIT.is_some_and(|limit| filled >= limit) {
+            return false;
+        }
+        // The adapter's live budget below still limits growth in the scene.
+    } else if let Some(limit) = limit {
         return filled < limit;
     }
     if filled < FLOOR {
@@ -3811,6 +3837,82 @@ mod tests {
             aliased, [GPU_TEXEL; 16],
             "the alias must replace the title upload in the same list"
         );
+    }
+
+    /// A two-slice packed light atlas behind a sampling view with a reduced mip chain.
+    #[cfg(all(windows, feature = "diagnostics"))]
+    #[test]
+    #[ignore = "requires a hardware D3D12 adapter and VICTORY_TEXTURE_DROP_MIPS=1"]
+    fn packed_light_alias_reads_retained_mips_on_each_slice() {
+        use windows::Win32::Graphics::Direct3D12::*;
+        use windows::Win32::Graphics::Dxgi::Common::*;
+
+        let host = crate::host::host().unwrap();
+        let null = std::ptr::null();
+        let (mut source, mut view) = (null, null);
+        let src_desc = ResourceDesc {
+            flags: 4, depth_or_array_size: 2,
+            ..texture(512, 512, DXGI_FORMAT_R32_UINT.0 as u32, 3)
+        };
+        let view_desc = ResourceDesc {
+            flags: 0, format: DXGI_FORMAT_R9G9B9E5_SHAREDEXP.0 as u32, ..src_desc
+        };
+        assert_eq!((drop_levels(&src_desc),drop_levels(&view_desc)),(0,1));
+        assert_eq!(create_committed(null, &PROPERTIES, 0, &src_desc, 0, null.cast(),
+            &RESOURCE_IIDS[0], &mut source), S_OK);
+        assert_eq!(create_at_address(null, resource(source).data() as u64, &view_desc, 0,
+            null.cast(), &RESOURCE_IIDS[0], &mut view), S_OK);
+        resource(view).host.placed.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(alias_of(view), Some(source));
+        let src = host_resource(source).unwrap();
+        let dst = host_resource(view).unwrap();
+        let (upload, data) = host.upload_buffer(6 * 512).unwrap();
+        let list = host.new_list().unwrap();
+        crate::list::ensure_state(&list, source, D3D12_RESOURCE_STATE_COPY_DEST.0 as u32);
+        let word = |sub: u32| 0x8c02_0100 + 0x24 * sub;
+        // SAFETY: Each aligned upload footprint supplies a single 32-bit texel
+        // to a separate mip or slice on the live producer.
+        unsafe {
+            for sub in 0..6 {
+                let offset = u64::from(sub) * 512;
+                data.add(offset as usize).cast::<u32>().write_unaligned(word(sub));
+                let from = D3D12_TEXTURE_COPY_LOCATION {
+                    pResource: std::mem::transmute_copy(&upload),
+                    Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+                    Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 { PlacedFootprint: D3D12_PLACED_SUBRESOURCE_FOOTPRINT {
+                        Offset: offset, Footprint: D3D12_SUBRESOURCE_FOOTPRINT {
+                            Format: DXGI_FORMAT_R32_UINT, Width: 1, Height: 1, Depth: 1, RowPitch: 256
+                        }
+                    } },
+                };
+                let to = D3D12_TEXTURE_COPY_LOCATION {
+                    pResource: std::mem::transmute_copy(src),
+                    Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+                    Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 { SubresourceIndex: sub },
+                };
+                list.list.CopyTextureRegion(&to, 0, 0, 0, &from, None);
+            }
+        }
+        assert!(crate::texture::alias(&list, view, source));
+        crate::list::ensure_state(&list, view, D3D12_RESOURCE_STATE_COPY_SOURCE.0 as u32);
+        let reads: Vec<_> = (0..4).map(|sub| {
+            crate::capture::read_back_of(&host.device, &list.list, dst, sub).unwrap()
+        }).collect();
+        list.close();
+        host.execute(&[&list]);
+        for ((buffer, layout), expected) in reads.into_iter().zip([1, 2, 4, 5]) {
+            let mut data = std::ptr::null_mut();
+            // SAFETY: all four copies completed and each footprint holds its first texel.
+            unsafe {
+                buffer.Map(0, None, Some(&mut data)).unwrap();
+                let value = data.cast::<u8>().add(layout.Offset as usize).cast::<u32>().read_unaligned();
+                buffer.Unmap(0, None);
+                assert_eq!(value, word(expected), "producer subresource {expected}");
+            }
+        }
+        for object in [view, source] {
+            slot::<extern "system" fn(This) -> u32>(object, 0x10)(object);
+        }
     }
 
     /// A 16-bit depth texture the title also asks unordered access for gets

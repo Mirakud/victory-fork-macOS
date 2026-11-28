@@ -8,7 +8,8 @@ from tempfile import TemporaryDirectory
 
 
 ROOT = Path(__file__).resolve().parents[2] / "crates/victory-gpu/src"
-SOURCES = ("indirect/clamp.hlsl", "host/card_compare.hlsl", "host/card_compare_parallel.hlsl")
+SOURCES = ("indirect/clamp.hlsl", "host/card_compare.hlsl", "host/card_compare_parallel.hlsl",
+           "memory/init_header.hlsl", "../tests/shaders/raw_fault_pages.hlsl")
 
 
 def find_dxc():
@@ -32,7 +33,8 @@ def main():
         for relative in SOURCES:
             source = ROOT / relative
             target = Path(tmp) / source.with_suffix(".dxil").name
-            subprocess.run([compiler, "-E", "main", "-T", "cs_6_0", "-Fo", str(target), str(source)], check=True)
+            profile = "cs_6_6" if source.name == "raw_fault_pages.hlsl" else "cs_6_0"
+            subprocess.run([compiler, "-E", "main", "-T", profile, "-Fo", str(target), str(source)], check=True)
             if target.read_bytes()[:4] != b"DXBC":
                 raise RuntimeError(f"Invalid DXIL container for {relative}")
             compiled.append((target, source.with_suffix(".dxil")))

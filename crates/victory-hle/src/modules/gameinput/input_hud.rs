@@ -27,11 +27,8 @@ impl Sample {
         } else {
             Vec::new()
         };
-        let (source, mut state) =
+        let (source, state) =
             pad.unwrap_or_else(|| ("keyboard", fallback_buttons(|vk| keys.contains(&vk))));
-        if !focus {
-            state = PadState::default();
-        }
         let axes = [
             state.left_x,
             state.left_y,
@@ -127,7 +124,7 @@ mod tests {
     }
 
     #[test]
-    fn physical_pad_takes_priority_and_drops_inputs_when_blurred() {
+    fn physical_pad_takes_priority_and_only_keys_are_hidden_when_blurred() {
         let pad = PadState {
             buttons: A,
             left_x: -0.49,
@@ -142,7 +139,7 @@ mod tests {
             let blurred = Sample::new(false, &[27], Some((source, pad)));
             assert_eq!(blurred.source, source);
             assert!(blurred.keys.is_empty());
-            assert_eq!((blurred.buttons, blurred.axes), (0, [0; 6]));
+            assert_eq!((blurred.buttons, blurred.axes), (A, [-49, 0, 0, 0, 0, 99]));
         }
     }
 

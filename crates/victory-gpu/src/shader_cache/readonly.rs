@@ -15,6 +15,12 @@ use victory_shader::emit::HostShader;
 #[cfg(windows)]
 #[path = "belobug.rs"]
 pub(crate) mod belobug;
+#[cfg(windows)]
+#[path = "bvh_scan.rs"]
+pub(crate) mod bvh_scan;
+#[cfg(windows)]
+#[path = "verified_store.rs"]
+mod verified_store;
 #[path = "refusal.rs"]
 mod refusal;
 #[path = "store.rs"]
@@ -53,6 +59,8 @@ pub(super) fn active() -> Option<&'static Packs> {
             primary: None,
             overlay: None,
             store: Some(store::configured()?),
+            #[cfg(windows)]
+            verified_store: verified_store::Store::configured(super::build()),
             warned_mismatch: AtomicBool::new(false),
             stats: Default::default(),
         })).as_ref()
@@ -100,6 +108,8 @@ pub(super) struct Packs {
     primary: Option<Pack>,
     overlay: Option<Pack>,
     store: Option<PathBuf>,
+    #[cfg(windows)]
+    verified_store: Option<verified_store::Store>,
     warned_mismatch: AtomicBool,
     // Total hits, misses, lookup time, fallback time, hits from the overlay.
     // Store hits, filesystem time, lookups and unreadable/malformed records.
@@ -196,7 +206,9 @@ impl Packs {
                 }
             }
         });
-        Self { primary: Some(primary), overlay, store: store::configured(),
+        #[cfg(windows)]
+        let verified_store = verified_store::Store::configured(primary.build);
+        Self { #[cfg(windows)] verified_store, primary: Some(primary), overlay, store: store::configured(),
             warned_mismatch: AtomicBool::new(false), stats: Default::default() }
     }
 
@@ -225,6 +237,16 @@ impl Packs {
             })
         });
         let found = packed.or_else(|| {
+            #[cfg(windows)]
+            if let Some(store) = &self.verified_store {
+                if self.primary.as_ref().is_some_and(|pack| pack.build != build) { return None; }
+                self.stats[7].fetch_add(1, Ordering::Relaxed);
+                let started = Instant::now();
+                let shader = store.shader(&hash);
+                self.stats[6].fetch_add(started.elapsed().as_micros() as u64, Ordering::Relaxed);
+                if shader.is_some() { self.stats[5].fetch_add(1, Ordering::Relaxed); }
+                return shader;
+            }
             let root = self.store.as_deref()?;
             self.stats[7].fetch_add(1, Ordering::Relaxed);
             match store::lookup(root, &build, guest, &self.stats[6]) {

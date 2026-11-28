@@ -1,5 +1,21 @@
 # Victory sur macOS
 
+<a href="docs/macos/m2-series-s-cour.png"><img src="docs/macos/m2-series-s-cour.png" alt="Une détenue en tenue rouge regarde vers la cour de la prison au coucher du soleil sur Mac M2" width="960"></a>
+
+*Prison, profil Series S sur Mac M2 avec 24 Go de mémoire unifiée. Capture en jeu du 28 novembre 2026.*
+
+| Depuis le seuil de la cellule | Sous les plafonniers |
+| --- | --- |
+| [![Profil du personnage devant la cour au soleil couchant](docs/macos/m2-series-s-seuil.png)](docs/macos/m2-series-s-seuil.png) | [![Vue intérieure avec trois plafonniers, les lits et la porte de la cellule](docs/macos/m2-series-s-cellule.png)](docs/macos/m2-series-s-cellule.png) |
+
+Le lanceur **Series S sur Mac** utilise la DualSense physique via GameController. Un appui sur Croix a été mesuré à 127 ms sur macOS et 131 ms dans le panneau de Victory. Le panneau suit aussi les boutons quand le jeu perd le focus. [Lanceur Series S](tools/run_victory_series_s_mac.command)
+
+La session photographiée a chargé **2 319 traductions en 143 ms**, puis **682 en 42 ms**. Quatre travailleurs préparent les pipelines graphiques. Le moteur charge en priorité les textures des matériaux dessinés. Les trois néons sont visibles dans la cellule, dont le fond et les lits restent sombres. Un prélèvement de 329 cibles a occupé une trame de 40,6 secondes et le jeu a interrompu cette session. [Mesures et empreintes](docs/macos/013918-series-s-m2.json)
+
+Pour reconstruire le moteur utilisé dans ces trois captures, la branche `series-s-m2-013918` contient les sources de cet essai. Le raccourci accepte les chemins de votre installation Wine et de votre copie du jeu. Les caches et les données du joueur se préparent localement. [Sources du moteur photographié](https://github.com/Mirakud/victory-fork-macOS/tree/series-s-m2-013918) · [Compilation sous Windows et lancement sur macOS](#démarrer-victory)
+
+## Prison sur Mac M3, 27 novembre
+
 <a href="docs/macos/030001-prison-cour.png"><img src="docs/macos/030001-prison-cour.png" alt="Dans la cour de la prison sur Mac M3, le jeu invite à déplacer le personnage et la caméra" width="960"></a>
 
 *Premiers déplacements dans la prison sur Mac M3.*

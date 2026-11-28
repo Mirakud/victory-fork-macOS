@@ -123,9 +123,7 @@ fn shader(stage: &'static str, bytes: &[u8]) -> Arc<Shader> {
 pub(crate) struct Translated {
     pub(crate) host: victory_shader::emit::HostShader,
     pub(crate) used: Vec<victory_shader::UsedResource>,
-    /// Whether the shader's code can store to buffer memory ([`stores`]);
-    /// true when its code is not known.
-    pub(crate) stores: bool,
+    pub(crate) stores: BufferWrites,
 }
 
 #[cfg(windows)]
@@ -183,8 +181,9 @@ fn translate(container: &[u8]) -> Result<Translated, String> {
         None => Vec::new(),
     };
     let host = crate::shader_cache::host_shader(container)
+        .or_else(|error| crate::shader_cache::readonly::bvh_scan::recover(container, error))
         .or_else(|error| crate::shader_cache::readonly::belobug::recover(container, error))?;
-    let stores = programs.is_empty() || programs.iter().any(stores);
+    let stores = programs.iter().map(buffer_writes).max().unwrap_or(BufferWrites::PossiblyRaw);
     let used = programs
         .into_iter()
         .find(|p| {
@@ -313,33 +312,43 @@ pub(crate) fn builder_runs() -> bool {
     true
 }
 
-/// Whether a console program can store to buffer memory: it has a buffer,
-/// typed-buffer, scalar-memory, flat or global store or atomic, or code
-/// that is not all known (an instruction of those kinds outside our table,
-/// an indirect jump, code that does not decode). Stores to textures
-/// (image instructions) and to the program's own scratch memory do not
-/// count: neither reaches a buffer's host copy. After upstream #413,
-/// which leaves scalar-memory stores out and counts image stores.
+/// The copies that an emitted shader may modify. A store through a bound
+/// UAV uses its descriptor. Only global/flat or scalar memory operations
+/// can also address a page through the raw-address directory.
 #[cfg(windows)]
-fn stores(program: &victory_shader::NativeProgram) -> bool {
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub(crate) enum BufferWrites {
+    None,
+    Bound,
+    PossiblyRaw,
+}
+
+#[cfg(windows)]
+fn buffer_writes(program: &victory_shader::NativeProgram) -> BufferWrites {
     use victory_shader::gfx10::{Encoding, decode};
     let Ok(code) = decode(&program.code) else {
-        return true;
+        return BufferWrites::PossiblyRaw;
     };
-    code.iter().any(|i| {
-        let name = i.name();
-        match i.encoding {
-            Encoding::Mubuf
-            | Encoding::Mtbuf
-            | Encoding::Smem
-            | Encoding::Flat
-            | Encoding::Global => name.is_none_or(|n| {
-                (n.contains("store") || n.contains("atomic")) && !n.contains("scratch")
-            }),
-            Encoding::Sop1 => name.is_none_or(|n| matches!(n, "s_setpc_b64" | "s_swappc_b64")),
-            _ => false,
+    let mut writes = BufferWrites::None;
+    for instruction in code {
+        let category = match instruction.encoding {
+            Encoding::Mubuf | Encoding::Mtbuf => BufferWrites::Bound,
+            Encoding::Smem | Encoding::Flat | Encoding::Global => BufferWrites::PossiblyRaw,
+            Encoding::Sop1 if instruction.name().is_none_or(|name| matches!(name, "s_setpc_b64" | "s_swappc_b64")) => {
+                return BufferWrites::PossiblyRaw;
+            }
+            _ => continue,
+        };
+        if instruction.name().is_none_or(|name| {
+            (name.contains("store") || name.contains("atomic")) && !name.contains("scratch")
+        }) {
+            writes = writes.max(category);
+            if writes == BufferWrites::PossiblyRaw {
+                break;
+            }
         }
-    })
+    }
+    writes
 }
 
 #[repr(C)]
@@ -417,6 +426,16 @@ pub(crate) fn diagnostic_graphics_state<'a>(this: This) -> Option<&'a host::Grap
         .host
         .graphics
         .as_deref()
+}
+
+/// The title's additive, stencil-tested spot, point, capsule and quad light volumes.
+#[cfg(all(windows, feature = "diagnostics"))]
+pub(crate) fn is_prison_light_volume(this: This) -> bool {
+    if this.is_null() { return false; }
+    let p = pipeline(this);
+    p.shaders.iter().any(|s| s.stage == "pixel" && matches!(s.hash.as_str(),
+        "55e52a40b5d79b20" | "a885ba5d98ce46bf" | "c94c4c7b5775cc2b" | "1407289e381df336"))
+        && p.host.graphics.as_ref().is_some_and(|g| g.matches_room_light_volume())
 }
 
 /// The mesh and pixel shader hashes selected for PSO preparation tracing.
@@ -834,6 +853,101 @@ mod tests {
 
     use super::*;
     use crate::object::{S_OK, slot};
+
+    #[cfg(all(windows, feature = "diagnostics"))]
+    #[test]
+    #[ignore = "requires the three XboxBvhBuilder guest containers and a D3D12 device"]
+    fn bvh_scan_host_pipelines() {
+        let inputs = std::path::PathBuf::from(std::env::var_os("VICTORY_TEST_SCAN_INPUTS").unwrap());
+        let expected = std::env::var("VICTORY_TEST_SCAN_EXPECT").unwrap() == "1";
+        let mut count = 0;
+        for entry in std::fs::read_dir(inputs).unwrap() {
+            let input = std::fs::read(entry.unwrap().path()).unwrap();
+            let translated = translate(&input);
+            if let Err(reason) = &translated {
+                eprintln!("{}: {reason}", blake3::hash(&input));
+            }
+            assert_eq!(translated.is_ok(), expected, "scan translation");
+            let s = shader("compute", &input);
+            assert_eq!(host::HostPipeline::new(&[s], None).is_some(), expected, "scan PSO");
+            count += 1;
+        }
+        assert_eq!(count, 3);
+    }
+
+    #[cfg(all(windows, feature = "diagnostics"))]
+    #[test]
+    #[ignore = "requires all 52 XboxBvhBuilder guest shaders and a D3D12 device"]
+    fn bvh_builder_host_pipelines() {
+        let inputs = std::env::var_os("VICTORY_TEST_BUILDER_INPUTS").unwrap();
+        let mut total = 0;
+        let mut failures = Vec::new();
+        for entry in std::fs::read_dir(inputs).unwrap() {
+            let bytes = std::fs::read(entry.unwrap().path()).unwrap();
+            total += 1;
+            if host::HostPipeline::new(&[shader("compute", &bytes)], None).is_none() {
+                failures.push(blake3::hash(&bytes).to_hex());
+            }
+        }
+        assert_eq!(total, 52);
+        assert!(failures.is_empty(), "refused builder shaders: {failures:?}");
+    }
+
+    #[cfg(all(windows, feature = "diagnostics"))]
+    #[test]
+    #[ignore = "requires a real set of CS shaders, a matching pack and a D3D12 device"]
+    fn timed_prison_pipeline_workers() {
+        use std::time::{Duration, Instant};
+        let inputs = std::env::var_os("VICTORY_TEST_BUILDER_INPUTS").unwrap();
+        let pack = std::env::var_os("VICTORY_READONLY_SHADER_PACK").unwrap();
+        crate::descriptor::host::probe_view_limit();
+        crate::shader_cache::readonly::preload(std::path::Path::new(&pack));
+        let mut paths: Vec<_> = std::fs::read_dir(inputs).unwrap()
+            .map(|entry| entry.unwrap().path()).collect();
+        paths.sort();
+        let pipelines: Vec<_> = paths.iter().map(|path| {
+            let bytes = std::fs::read(path).unwrap();
+            Arc::new(make::Pending::new(vec![shader("compute", &bytes)], None))
+        }).collect();
+        assert_eq!(pipelines.len(), 52);
+        assert_eq!(std::env::var("VICTORY_PIPELINE_WAIT_MS").unwrap(), "0");
+        let start = Instant::now();
+        for pipeline in &pipelines {
+            let _ = make::ready(pipeline);
+        }
+        while make::waiting() != 0 {
+            assert!(start.elapsed() < Duration::from_secs(120));
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        for pipeline in &pipelines {
+            assert!(make::ready(pipeline).is_some(), "unresolved pipeline {}", pipeline.key);
+        }
+        println!("host queue: {} real compute pipelines in {} ms", pipelines.len(), start.elapsed().as_millis());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "requires the original raw-address shaders from the prison scene"]
+    fn raw_write_scope_for_prison_shaders() {
+        use victory_shader::{Container, FourCC};
+        let inputs = std::env::var_os("VICTORY_TEST_RAW_WRITE_INPUTS").unwrap();
+        let mut bound = 0;
+        let mut raw = 0;
+        for entry in std::fs::read_dir(inputs).unwrap() {
+            let bytes = std::fs::read(entry.unwrap().path()).unwrap();
+            let guest = blake3::hash(&bytes);
+            let container = Container::parse(&bytes).unwrap();
+            let programs = victory_shader::native_programs(container.part(FourCC::DXIL).unwrap().data).unwrap();
+            let scope = programs.iter().map(buffer_writes).max().unwrap();
+            println!("raw-address shader {guest} {scope:?}");
+            match scope {
+                BufferWrites::Bound => bound += 1,
+                BufferWrites::PossiblyRaw => raw += 1,
+                BufferWrites::None => {}
+            }
+        }
+        assert!(bound > 0 && raw > 0, "{bound} descriptor writers, {raw} possible raw writers");
+    }
 
     #[cfg(windows)]
     #[test]

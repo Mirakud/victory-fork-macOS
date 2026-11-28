@@ -4,6 +4,8 @@
 //! size. Only in builds with diagnostics.
 
 mod cadence;
+pub(crate) mod lights;
+mod request;
 pub(crate) mod planes;
 
 use std::path::PathBuf;
@@ -75,7 +77,7 @@ pub(crate) fn first_indirect() {
     }
 }
 
-/// With a capture folder, for the frames [`listed`]: `what` is added to
+/// With a capture folder, for a listed or explicitly requested frame: `what` is added to
 /// the frame's `frame-<n>-ops.txt`, one line per draw, dispatch, copy or
 /// drop in the order recorded (the title records on several threads, so
 /// lines of different lists interleave; each names its list). The file
@@ -88,7 +90,7 @@ pub(crate) fn op(list: usize, what: impl FnOnce() -> String) {
     let first_indirect = FIRST_INDIRECT_FRAME.load(Ordering::Relaxed);
     let trace_indirect = first_indirect != u64::MAX
         && frame.wrapping_sub(first_indirect) < *INDIRECT_FRAMES;
-    if !trace_indirect && !listed(frame) {
+    if !trace_indirect && !listed(frame) && !target_frame(frame) {
         // Before the world: the last lines are kept, and written out when
         // it starts (`before-world-ops.txt`): what the title drew just
         // before (the title shows a title card there, whose text
@@ -191,7 +193,7 @@ pub(crate) fn wanted(n: u64) -> bool {
     let first = WORLD.load(Ordering::Relaxed);
     let loading = world_on() && !world_only() && first == u64::MAX && n.is_multiple_of(16);
     let regular = !WORLD_CADENCE.png_only && (n.is_power_of_two() || loading);
-    regular || listed(n) || world_on() && WORLD_CADENCE.scheduled(n, first) || capture_requested(n)
+    regular || target_frame(n) || listed(n) || world_on() && WORLD_CADENCE.scheduled(n, first) || capture_requested(n)
 }
 
 /// Separate input planes are only recorded with the opt-in on an already requested world PNG.
@@ -389,8 +391,8 @@ pub(crate) fn save_read_back(
         if buffer.Map(0, None, Some(&mut data)).is_err() {
             return;
         }
-        let len = f.RowPitch as usize * f.Height as usize;
-        let rows = std::slice::from_raw_parts(data.cast::<u8>(), len);
+        // The last row of the footprint can end before its row padding.
+        let rows = std::slice::from_raw_parts(data.cast::<u8>(), buffer.GetDesc().Width as usize);
         save(frame, f.Width, f.Height, f.RowPitch as usize, bgra, rows);
         buffer.Unmap(0, None);
     }
@@ -577,31 +579,66 @@ fn rgba_differences(width: usize, pitch: usize, before: &[u8], after: &[u8]) -> 
 /// structure: floats scaled by their largest value, depth by its range).
 /// The host copies are held: the title may release a target before the
 /// frame is presented.
-static TARGETS: std::sync::Mutex<Vec<(usize, std::sync::Arc<crate::resource::HostTexture>)>> =
-    std::sync::Mutex::new(Vec::new());
+type HeldTargets = Vec<(usize, std::sync::Arc<crate::resource::HostTexture>)>;
+static TARGETS: std::sync::Mutex<std::collections::BTreeMap<u64, HeldTargets>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+static TARGET_REQUEST: LazyLock<Option<request::TargetRequest>> = LazyLock::new(|| {
+    folder()?;
+    let path = std::env::var_os("VICTORY_CAPTURE_TARGETS_FILE")?;
+    Some(request::TargetRequest::new(path.into()))
+});
+
+pub(crate) fn target_frame(frame: u64) -> bool {
+    TARGET_REQUEST.as_ref().is_some_and(|r| r.selects(frame))
+}
+
+/// With VICTORY_CAPTURE_TARGETS_FILE, touching that path requests a deferred
+/// render-target capture plus its matching composited PNG on a full frame.
+pub(crate) fn poll_targets(finished: u64) {
+    if let Some(frame) = TARGET_REQUEST.as_ref().and_then(|r| r.after_present(finished, crate::queue::presented)) {
+        tracing::info!(frame, "armed one-frame render target capture");
+    }
+}
 
 fn dump_on() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| folder().is_some() && std::env::var_os("VICTORY_DUMP_TARGETS").is_some())
 }
 
-/// Notes a title texture the frame being built renders to or writes.
-pub(crate) fn note_target(resource: crate::object::This) {
-    if resource.is_null() || !dump_on() || !listed(crate::queue::presented() + 1) {
+fn hold_targets(frame: u64, resources: impl Iterator<Item = usize>) {
+    let mut pending = TARGETS.lock().unwrap_or_else(|e| e.into_inner());
+    // The recording thread may have crossed a present while taking the lock.
+    if crate::queue::presented() >= frame {
         return;
     }
-    let mut targets = TARGETS.lock().unwrap_or_else(|e| e.into_inner());
-    if !targets.iter().any(|&(r, _)| r == resource as usize)
-        && let Some(copy) = crate::resource::host_copy(resource)
-    {
-        targets.push((resource as usize, copy));
+    let targets = pending.entry(frame).or_default();
+    for resource in resources {
+        if !targets.iter().any(|&(id, _)| id == resource)
+            && let Some(copy) = crate::resource::host_copy(resource as crate::object::This)
+        {
+            targets.push((resource, copy));
+        }
     }
 }
 
-/// At the present of frame `frame`: saves the noted targets.
+/// Hold the exact same frame's render targets, depth and texture UAVs.
+/// The one-shot path also captures single-target lighting and exposure passes.
+pub(crate) fn note_target(resource: crate::object::This) {
+    if resource.is_null() { return; }
+    let frame = crate::queue::presented() + 1;
+    if target_frame(frame) || dump_on() && listed(frame) {
+        hold_targets(frame, std::iter::once(resource as usize));
+    }
+}
+
+/// At the present of frame `frame`: saves only the targets noted for that frame.
 pub(crate) fn dump_targets(frame: u64) {
     use std::sync::atomic::Ordering::Relaxed;
-    let targets = std::mem::take(&mut *TARGETS.lock().unwrap_or_else(|e| e.into_inner()));
+    let targets = TARGETS.lock().unwrap_or_else(|e| e.into_inner()).remove(&frame).unwrap_or_default();
+    if target_frame(frame) {
+        tracing::info!(frame, count = targets.len(), "reading captured render targets");
+    }
     let Some(host) = crate::host::host() else { return };
     for (i, (resource, copy)) in targets.iter().enumerate() {
         let texture = &copy.texture;
@@ -665,7 +702,8 @@ fn dump_one(
             return;
         }
         let pitch = f.RowPitch as usize;
-        let rows = std::slice::from_raw_parts(data.cast::<u8>(), pitch * f.Height as usize);
+        // The last row of the footprint can end before its row padding.
+        let rows = std::slice::from_raw_parts(data.cast::<u8>(), buffer.GetDesc().Width as usize);
         // A 24-bit depth plane comes back as 32-bit words: which depth values
         // (low 24 bits) and which top bytes it holds, the most common first.
         if matches!(d.Format.0, 44..=47) {
@@ -692,6 +730,9 @@ fn dump_one(
                 d.Width, d.Height, d.Format.0
             );
             save_as(&name, f.Width, f.Height, f.Width as usize * 4, false, &rgba);
+            if f.Format.0 == 67 && target_frame(frame) {
+                save_luminance(&name, 67, f.Width as usize, f.Height as usize, pitch, rows);
+            }
         } else {
             tracing::info!(format = f.Format.0, ?resource, "target not dumped: format");
         }
@@ -781,6 +822,41 @@ fn small_float(bits: u32, man: u32) -> f32 {
     }
 }
 
+/// DXGI R9G9B9E5_SHAREDEXP, linear channels in scene units.
+fn rgb9e5(v: u32) -> [f32; 3] {
+    let scale = 2f32.powi((v >> 27) as i32 - 24);
+    [0, 9, 18].map(|shift| ((v >> shift) & 511) as f32 * scale)
+}
+
+/// Netpbm floating point greyscale. Sample the same coordinates as the PNG;
+/// PFM stores rows from the bottom and a negative scale means little-endian.
+fn linear_luminance(format: i32, w: usize, h: usize, pitch: usize, rows: &[u8]) -> Option<Vec<u8>> {
+    let bytes = match format { 10 => 8, 67 => 4, _ => return None };
+    let (sw, sh) = ((w / 2).max(1), (h / 2).max(1));
+    let mut out = format!("Pf\n{sw} {sh}\n-1.0\n").into_bytes();
+    out.reserve(sw * sh * 4);
+    for y in (0..sh).rev() {
+        for x in 0..sw {
+            let p = &rows[2 * y * pitch + 2 * x * bytes..];
+            let [r, g, b] = if format == 67 {
+                rgb9e5(u32::from_le_bytes(p[..4].try_into().ok()?))
+            } else {
+                [0, 2, 4].map(|i| half(u16::from_le_bytes([p[i], p[i + 1]])))
+            };
+            out.extend_from_slice(&(0.2126 * r + 0.7152 * g + 0.0722 * b).to_le_bytes());
+        }
+    }
+    Some(out)
+}
+
+fn save_luminance(name: &str, format: i32, w: usize, h: usize, pitch: usize, rows: &[u8]) {
+    if let Some(folder) = folder()
+        && let Some(data) = linear_luminance(format, w, h, pitch, rows)
+        && let Err(e) = std::fs::write(folder.join(format!("{name}-luma.pfm")), data) {
+        tracing::warn!(%name, error = %e, "linear luminance not saved");
+    }
+}
+
 /// Rows of a host format as 8-bit RGBA: 8-bit color as is, everything else
 /// as channel values scaled so the largest finite one is white (single
 /// channels: lowest black, highest white, as grey). `None` for formats not
@@ -820,6 +896,7 @@ fn to_rgba(format: u32, w: usize, h: usize, pitch: usize, rows: &[u8]) -> Option
             let v = u32_at(b, 0);
             [small_float(v & 0x7ff, 6), small_float(v >> 11 & 0x7ff, 6), small_float(v >> 22, 5)]
         })),
+        67 => (4, Box::new(move |b| rgb9e5(u32_at(b, 0)))),
         9..=10 => (8, Box::new(move |b| [half(u16_at(b, 0)), half(u16_at(b, 1)), half(u16_at(b, 2))])),
         11..=14 => (8, Box::new(move |b| [0, 1, 2].map(|i| f32::from(u16_at(b, i))))),
         33..=34 => (4, Box::new(move |b| [half(u16_at(b, 0)), half(u16_at(b, 1)), 0.0])),
@@ -881,10 +958,7 @@ fn to_rgba(format: u32, w: usize, h: usize, pitch: usize, rows: &[u8]) -> Option
             for x in 0..w {
                 let v = u32_at(px(x, y, 4), 0);
                 set += usize::from(v != 0);
-                let scale = 2f32.powi((v >> 27) as i32 - 24);
-                for k in 0..3 {
-                    packed_high = packed_high.max((v >> (9 * k) & 0x1ff) as f32 * scale);
-                }
+                packed_high = rgb9e5(v).into_iter().fold(packed_high, f32::max);
             }
         }
         let nonzero_bits_percent = set as f32 * 100.0 / (w * h).max(1) as f32;
@@ -928,7 +1002,7 @@ fn to_rgba(format: u32, w: usize, h: usize, pitch: usize, rows: &[u8]) -> Option
     }
     // Float colours (scene light) go through a cube root: scaled linearly,
     // a night scene under one lamp of 50 units came out all black.
-    let curved = matches!(format, 1..=2 | 9..=10 | 26);
+    let curved = matches!(format, 1..=2 | 9..=10 | 26 | 67);
     for v in values {
         let c = v.map(|c| {
             let t = ((c - low) / range).clamp(0.0, 1.0);
@@ -1067,6 +1141,33 @@ pub(crate) fn recent_levels() -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shared_exponent_and_linear_wall_luminance() {
+        assert_eq!(super::rgb9e5(0), [0.0; 3]);
+        assert_eq!(super::rgb9e5(1), [2f32.powi(-24), 0.0, 0.0]);
+        assert_eq!(super::rgb9e5(u32::MAX), [65408.0; 3]);
+        let channels = 24 << 27 | 7 << 18 | 2 << 9 | 19;
+        assert_eq!(super::rgb9e5(channels), [19.0, 2.0, 7.0]);
+        let mut padded = [0u8; 3 * 256 + 8];
+        padded[..4].copy_from_slice(&channels.to_le_bytes());
+        padded[512..516].copy_from_slice(&(24u32 << 27 | 2 << 9).to_le_bytes());
+        let rgba = super::to_rgba(67, 2, 4, 256, &padded).unwrap();
+        assert_eq!(rgba[0], 255);
+        assert!(rgba[2] > rgba[1] && rgba[1] > 0);
+        assert_eq!(&rgba[4..8], &[0, 0, 0, 255]);
+        let pfm = super::linear_luminance(67, 2, 4, 256, &padded).unwrap();
+        let header = b"Pf\n1 2\n-1.0\n";
+        assert_eq!(&pfm[..header.len()], header);
+        let values: Vec<_> = pfm[header.len()..].chunks_exact(4)
+            .map(|v| f32::from_le_bytes(v.try_into().unwrap())).collect();
+        assert!((values[0] - 1.4304).abs() < 1e-5);
+        assert!((values[1] - (0.2126 * 19.0 + 0.7152 * 2.0 + 0.0722 * 7.0)).abs() < 1e-5);
+        let mut rgba16 = [0u8; 8];
+        rgba16[2..4].copy_from_slice(&0x4000u16.to_le_bytes());
+        let pfm = super::linear_luminance(10, 1, 1, 8, &rgba16).unwrap();
+        assert!((f32::from_le_bytes(pfm[pfm.len()-4..].try_into().unwrap()) - 1.4304).abs() < 1e-5);
+    }
+
     #[test]
     fn crc_matches_the_png_check_value() {
         assert_eq!(super::crc32(b"IEND"), 0xae42_6082);

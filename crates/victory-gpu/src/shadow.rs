@@ -2333,6 +2333,9 @@ impl Shadow {
         self.watched.load(Ordering::Relaxed) == NOT_WATCHED
     }
 
+    #[cfg(feature = "diagnostics")]
+    pub(crate) fn separate_from_title(&self) -> bool { self.place.is_none() }
+
     /// The copy's own number (see the field).
     pub(crate) fn id(&self) -> u64 {
         self.id
@@ -3592,6 +3595,35 @@ pub(crate) fn register(resource: usize, start: u64, len: u64) {
 /// The title released it; lists that still hold its copy keep it alive.
 pub(crate) fn unregister(resource: usize, start: u64) {
     buffers().remove(&(start, resource));
+}
+
+/// The innermost live title buffer covering a byte, only if its GPU copy
+/// has already been materialised. Never creates a shadow or a loose window.
+pub(crate) fn existing_buffer(address: u64) -> Option<Arc<Shadow>> {
+    buffers()
+        .range(..=(address, usize::MAX)).rev().take(64)
+        .find(|(_, entry)| entry.end > address)
+        .and_then(|(_, entry)| entry.shadow.clone())
+}
+
+/// Already materialised loose windows that contain the entire header.
+#[cfg(feature = "diagnostics")]
+pub(crate) fn as_header_windows(address: u64, size: usize) -> Vec<Arc<Shadow>> {
+    let loose = LOOSE.lock().unwrap_or_else(|e| e.into_inner());
+    loose.windows.range(..=(address, u64::MAX)).rev()
+        .filter(|(_, s)| s.left(address) >= size as u64)
+        .take(8).map(|(_, s)| s.clone()).collect()
+}
+
+#[cfg(feature = "diagnostics")]
+pub(crate) fn as_host_header(shadow: &Shadow, address: u64) -> Option<[u32;64]> {
+    let at = shadow.offset_in(address)?;
+    if shadow.left(address) < 256 || shadow.data.is_null() { return None; }
+    let mut bytes = [0u8;256];
+    // The kernel only copies the requested bytes of the existing mapped
+    // staging memory. This is a CPU observation at submission, not a fence.
+    crate::host::read_into(unsafe { shadow.data.add(at as usize) }, &mut bytes)
+        .then(|| std::array::from_fn(|i| u32::from_le_bytes(bytes[i*4..i*4+4].try_into().unwrap())))
 }
 
 /// The title buffer holding `address`, as (start, length), without making

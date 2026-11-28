@@ -15,6 +15,19 @@ from xcl_process_memory import native_reader
 
 FRAME = re.compile(rb'victory_gpu::host: [\d.]+ fps, ([\d.]+) ms/frame')
 BREAKDOWN = re.compile(rb'preparing: copies ([\d.]+) ms [^;]+; ([\d.]+) on the GPU;')
+ANSI_STYLE = re.compile(rb'\x1b\[[0-9;]*m')
+
+
+def frame_readings(line):
+    if b" ms/frame" not in line:
+        return None
+    line = ANSI_STYLE.sub(b"", line)
+    match = FRAME.search(line)
+    if match is None or float(match[1]) <= 0:
+        return None
+    breakdown = BREAKDOWN.search(line, match.end())
+    copy_ms, gpu_ms = map(float, breakdown.groups()) if breakdown else (None, None)
+    return float(match[1]), copy_ms, gpu_ms
 
 
 def build_hud(source):
@@ -63,7 +76,7 @@ def find_game(candidate, monitor_pid):
 
 
 class PerformanceHUD:
-    def __init__(self, binary, run, candidate, monitor_pid, shader_ab=False):
+    def __init__(self, binary, run, candidate, monitor_pid, shader_ab=False, input_socket=None):
         self.path = run / "hud.json"
         self.run = run
         self.candidate = candidate
@@ -79,7 +92,11 @@ class PerformanceHUD:
             command = [str(binary), str(self.path)]
             if shader_ab:
                 command.append("--shader-ab")
-            self.panel = subprocess.Popen(command, stdin=subprocess.DEVNULL,
+            inherited = ()
+            if input_socket is not None:
+                inherited = (input_socket.fileno(),)
+                command += ["--input-fd", str(input_socket.fileno())]
+            self.panel = subprocess.Popen(command, stdin=subprocess.DEVNULL, pass_fds=inherited,
                                           stdout=self.log, stderr=subprocess.STDOUT)
         except OSError:
             self.log.close()
@@ -119,11 +136,9 @@ class PerformanceHUD:
                 lines = data.split(b"\n")
                 pending = lines.pop()
                 for line in reversed(lines):
-                    match = FRAME.search(line)
-                    if match and float(match[1]) > 0:
-                        frame_ms = float(match[1])
-                        breakdown = BREAKDOWN.search(line, match.end())
-                        copy_ms, gpu_ms = map(float, breakdown.groups()) if breakdown else (None, None)
+                    readings = frame_readings(line)
+                    if readings is not None:
+                        frame_ms, copy_ms, gpu_ms = readings
                         measured = time.monotonic()
                         break
                 recent = measured is not None and time.monotonic() - measured <= max(20, 3 * frame_ms / 1000)

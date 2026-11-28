@@ -12,7 +12,7 @@ mod input_reads;
 pub mod opt;
 
 pub(crate) use input_reads::{
-    PixelInputRead, PixelInputType, pixel_body_inventory, pixel_input_reads,
+    PixelBodyInventory, PixelInputRead, PixelInputType, pixel_body_inventory, pixel_input_reads,
 };
 
 fn pixel_input_opcode(name: &str) -> Option<u32> {

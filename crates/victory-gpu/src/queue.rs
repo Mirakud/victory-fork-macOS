@@ -933,10 +933,12 @@ extern "system" fn present(
             tracing::info!(hits, misses, "shaders from the cache and translated so far");
         }
     }
+    #[cfg(windows)]
+    crate::resource::allow_world_textures(crate::draw::drawn());
     #[cfg(all(windows, feature = "diagnostics"))]
     {
         crate::capture::frame_drew(frame, crate::draw::drawn());
-        if crate::capture::listed(frame) {
+        if crate::capture::listed(frame) || crate::capture::target_frame(frame) {
             crate::capture::dump_targets(frame);
         }
     }
@@ -978,6 +980,8 @@ extern "system" fn present(
         #[cfg(not(feature = "diagnostics"))]
         let _ = shown;
     }
+    #[cfg(all(windows, feature = "diagnostics"))]
+    crate::capture::poll_targets(frame);
     #[cfg(not(windows))]
     let _ = (planes, plane_parameters);
     S_OK

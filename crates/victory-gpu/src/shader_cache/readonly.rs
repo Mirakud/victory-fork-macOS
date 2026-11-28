@@ -12,8 +12,18 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 use victory_shader::emit::HostShader;
 
+#[cfg(windows)]
+#[path = "belobug.rs"]
+pub(crate) mod belobug;
+#[cfg(windows)]
+#[path = "bvh_scan.rs"]
+pub(crate) mod bvh_scan;
+
 #[path = "refusal.rs"]
 mod refusal;
+#[cfg(windows)]
+#[path = "store.rs"]
+mod store;
 
 const MAGIC: &[u8; 8] = b"VSP1\r\n\x1a\n";
 const MAX_BYTES: usize = 256 << 20;
@@ -85,6 +95,8 @@ struct Pack {
 pub(super) struct Packs {
     primary: Pack,
     overlay: Option<Pack>,
+    #[cfg(windows)]
+    store: Option<store::Store>,
     warned_mismatch: AtomicBool,
     // Total hits, misses, lookup time, fallback time, hits from the overlay.
     stats: [AtomicU64; 5],
@@ -180,7 +192,11 @@ impl Packs {
                 }
             }
         });
-        Self { primary, overlay, warned_mismatch: AtomicBool::new(false), stats: Default::default() }
+        Self {
+            #[cfg(windows)]
+            store: store::Store::configured(primary.build),
+            primary, overlay, warned_mismatch: AtomicBool::new(false), stats: Default::default()
+        }
     }
 
     pub(super) fn translate(
@@ -205,6 +221,12 @@ impl Packs {
                     actual = %blake3::Hash::from(build), "read-only shader pack build mismatch");
             }
             None
+        };
+        #[cfg(windows)]
+        let found = if matching {
+            found.or_else(|| self.store.as_ref()?.shader(&hash))
+        } else {
+            found
         };
         self.stats[2].fetch_add(began.elapsed().as_micros() as u64, Ordering::Relaxed);
         if let Some(shader) = found {

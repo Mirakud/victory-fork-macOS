@@ -156,6 +156,11 @@ pub fn check(path: &str, content: &[u8]) -> Vec<String> {
             | "docs/macos/m2-series-s-cour.png"
             | "docs/macos/m2-series-s-seuil.png"
             | "docs/macos/m2-series-s-cellule.png"
+            | "docs/macos/035459-cellule.png"
+            | "docs/macos/035459-plafond.png"
+            | "docs/macos/035459-sol-hors-champ.png"
+            | "docs/macos/035459-sol-eteint.png"
+            | "docs/macos/035459-sol-rallume.png"
             | "docs/macos/menu-game-macos.png"
     );
     let reviewed_capture = matches!(

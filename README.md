@@ -1,5 +1,33 @@
 # Victory sur macOS
 
+<a href="docs/macos/035459-cellule.png"><img src="docs/macos/035459-cellule.png" alt="Depuis les lits, vue de la cellule éclairée sur Mac M2, avec les mesures de performances au-dessus du jeu" width="960"></a>
+
+*Prison sur Mac M2, 24 Go de mémoire unifiée. Image 3267 du 28 novembre 2026.*
+
+Les quatre plafonniers éclairent le sol et les murs de la cellule même quand le joueur baisse la caméra. Dans la vue hors champ ci-dessous, 108 887 des 108 951 échantillons du plancher reçoivent de la lumière. Sur la dernière vue plongeante, la luminosité moyenne affichée du même matériau passe de 22,21 à 12,54 sur 255 à l’extinction, puis remonte à 18,79 au rallumage. [Mesures et empreintes des captures](docs/macos/035459-series-s-m2.json)
+
+Le profil Series S suit la DualSense physique avec GameController. Sur cet essai, le M2 a chargé les deux packs de 2 319 et 682 traductions en 131 et 39 ms. Quatre travailleurs préparent les pipelines. La préparation ARM64 à froid de 192 shaders a pris 3,74 s avec six travailleurs, contre 10,21 s avec un seul. Le rendu de la prison prend encore plusieurs secondes par image. [Lanceur Series S](tools/run_victory_series_s_mac.command) · [Sources du moteur de la session 035459](https://github.com/Mirakud/victory-fork-macOS/tree/series-s-m2-035459)
+
+### Photos de la cellule sur Mac M2
+
+| Plafond, image 3289 | Sol avec les quatre lampes hors champ, image 3306 |
+| --- | --- |
+| [![Les tubes du quatrième plafonnier au bord droit de la cellule](docs/macos/035459-plafond.png)](docs/macos/035459-plafond.png) | [![Le sol reste éclairé entre les pieds des lits](docs/macos/035459-sol-hors-champ.png)](docs/macos/035459-sol-hors-champ.png) |
+| **Lampes éteintes, image 3327** | **Lampes rallumées, image 3335** |
+| [![Vue plongeante, les détails du sol disparaissent à l’extinction](docs/macos/035459-sol-eteint.png)](docs/macos/035459-sol-eteint.png) | [![Le grain du sol et le mobilier réapparaissent au rallumage](docs/macos/035459-sol-rallume.png)](docs/macos/035459-sol-rallume.png) |
+
+Le bandeau des captures indique les FPS, le CPU et la RAM de Victory, le temps par image, l’attente GPU et le temps de copie. Chaque export porte le filigrane « mirakud » en bas à droite.
+
+### Vues de la version précédente sur Mac M2
+
+| Cour au coucher du soleil | Seuil de la cellule | Intérieur avant la correction |
+| --- | --- | --- |
+| [![La cour de la prison](docs/macos/m2-series-s-cour.png)](docs/macos/m2-series-s-cour.png) | [![Personnage de profil au seuil](docs/macos/m2-series-s-seuil.png)](docs/macos/m2-series-s-seuil.png) | [![Les néons visibles au-dessus des lits dans la session 013918](docs/macos/m2-series-s-cellule.png)](docs/macos/m2-series-s-cellule.png) |
+
+Ces trois vues proviennent de la session 013918. Le relevé de 40,6 s sur l’image de la cellule inclut le prélèvement de 329 cibles de diagnostic. [Mesures de la session précédente](docs/macos/013918-series-s-m2.json) · [Sources de cette version](https://github.com/Mirakud/victory-fork-macOS/tree/series-s-m2-013918)
+
+## Prison sur Mac M3, 27 novembre
+
 <a href="docs/macos/030001-prison-cour.png"><img src="docs/macos/030001-prison-cour.png" alt="Dans la cour de la prison sur Mac M3, le jeu invite à déplacer le personnage et la caméra" width="960"></a>
 
 *Premiers déplacements dans la prison sur Mac M3.*
@@ -124,6 +152,14 @@ python3 tools/macos/run.py \
     --victory "$VICTORY_EXE" --title "$TITLE_EXE" \
     --engine "$SIKARUGIR_ENGINE" --bottle "$VICTORY_BOTTLE" \
     --output "$RUNS_DIR" --preview
+```
+
+Pour reproduire la session M2 avec la calibration des quatre plafonniers fournie dans le dépôt, utilisez le raccourci Series S avec votre moteur et votre copie du profil. Retirez `--preview` pour jouer.
+
+```sh
+./tools/run_victory_series_s_mac.command \
+    --victory "$VICTORY_EXE" --title "$TITLE_EXE" --engine "$SIKARUGIR_ENGINE" \
+    --bottle "$VICTORY_BOTTLE" --output "$RUNS_DIR" --data "$VICTORY_DATA" --preview
 ```
 
 Le raccourci du dépôt `tools/run_victory_d3dmetal4_mac.command` accepte les mêmes chemins et sélectionne directement le profil prison. Avec `run.py`, ajoutez `--prison-profile --data "$VICTORY_DATA"` à cette commande. Avec le raccourci, seul `--data "$VICTORY_DATA"` est à ajouter aux chemins. Pour reproduire le préchauffage, fournissez aussi `--shader-pack "$SHADER_PACK" --shader-overlay "$SHADER_OVERLAY" --pipeline-manifest "$PIPELINE_MANIFEST"` avec vos fichiers locaux compatibles. Ce profil active le panneau Shaders A/B, applique les distances de détail de la session et laisse macOS gérer la RAM. Le moniteur continue à surveiller les erreurs mémoire Metal.

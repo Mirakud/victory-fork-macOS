@@ -1,0 +1,124 @@
+{
+  "session": "013918",
+  "plateforme": "Mac M2, 24 Go de mémoire unifiée, Wine Sikarugir et D3DMetal 4",
+  "profil": "Series S",
+  "moteur_sha256": "cbfb5be7cce10ae1dc8a133c8236748c3f9b3921d085e7e0f9ebbb0668c638d0",
+  "photos": {
+    "cour": {
+      "frame": 2376,
+      "file": "m2-series-s-cour.png",
+      "width": 960,
+      "height": 623,
+      "sha256": "1143ca6f7bf352b6b0265afc80b8b3f308879c9cf02bd805e0c86a7a2c6a338b",
+      "source_sha256": "69e77f75d033aaaa9057445de65b6f1119b5f86477ee64201ac84e913e920f37",
+      "source_dimensions": [
+        960,
+        540
+      ],
+      "capture_utc": "2026-11-28T00:45:58.948891Z",
+      "hud_utc": "2026-11-28T00:45:58.262640Z",
+      "hud_offset_s": -0.686251,
+      "timings_utc": "2026-11-28T00:45:56.540667Z",
+      "timings_presentation_offset": -1,
+      "hud": {
+        "fps": 0.40035231003282884,
+        "cpu_percent": 266.5381628794654,
+        "ram_mib": 14709.595008850098,
+        "frame_ms": 2497.8,
+        "gpu_ms": 1002.2,
+        "copy_ms": 1091.5
+      }
+    },
+    "seuil": {
+      "frame": 2400,
+      "file": "m2-series-s-seuil.png",
+      "width": 960,
+      "height": 623,
+      "sha256": "ef3c6ba2cc97b35bcf2655f965abe8a5a3103fdbf495d9218ea25fcb212366b9",
+      "source_sha256": "361674e753c307fb0bb4ccb370dfbd149ea9992a4c90cd7ba96ed126738c89c5",
+      "source_dimensions": [
+        960,
+        540
+      ],
+      "capture_utc": "2026-11-28T00:47:34.647071Z",
+      "hud_utc": "2026-11-28T00:47:34.698188Z",
+      "hud_offset_s": 0.051117,
+      "timings_utc": "2026-11-28T00:47:31.461128Z",
+      "timings_presentation_offset": -1,
+      "hud": {
+        "fps": 0.3636231409766918,
+        "cpu_percent": 265.9668031500382,
+        "ram_mib": 15263.219161987305,
+        "frame_ms": 2750.1,
+        "gpu_ms": 1054.2,
+        "copy_ms": 1361.6
+      }
+    },
+    "cellule": {
+      "frame": 2428,
+      "file": "m2-series-s-cellule.png",
+      "width": 960,
+      "height": 623,
+      "sha256": "3e494222f05de8af9f759d4e49642e277540f52a2b49f8ab74a716a8b8554908",
+      "source_sha256": "f83aba253d454f3c49b38e38fcbadd2565aa06607734d28de170b5e62551330d",
+      "source_dimensions": [
+        960,
+        540
+      ],
+      "capture_utc": "2026-11-28T00:50:41.540582Z",
+      "hud_utc": "2026-11-28T00:50:40.797702Z",
+      "hud_offset_s": -0.74288,
+      "timings_utc": "2026-11-28T00:50:41.542870Z",
+      "timings_presentation_offset": 0,
+      "hud": {
+        "fps": 0.024617020700452706,
+        "cpu_percent": 82.95410498433488,
+        "ram_mib": 14769.615341186523,
+        "frame_ms": 40622.3,
+        "gpu_ms": 4154.1,
+        "copy_ms": 6071.9
+      }
+    }
+  },
+  "shaders": {
+    "pack": [
+      2319,
+      143
+    ],
+    "complément": [
+      682,
+      42
+    ],
+    "unités": "nombre de traductions, millisecondes",
+    "magasin_en_lecture": 25638,
+    "pipelines_sélectionnés": 1909,
+    "travailleurs": 4,
+    "pack_sha256": "9d9b6d8f3f1e592b0abd97203ea5d61debc11df10c161a729bd239343fdb97c7",
+    "complément_sha256": "ff1eddcd78faefb2d39dba343d61603a0db9f18bdbf017a8aa0784fb74816f4e",
+    "priorités_sha256": "438acb530c39f328b0c51c6ca8418572f4f21b9d8017a9df5b4ed78928b096f7"
+  },
+  "textures": {
+    "budget_initial_Mio": 512,
+    "budget_scène_Mio": 1536,
+    "matières_reconnues": 43,
+    "vues_préparées_au_moins": 2048
+  },
+  "construction_BVH": {
+    "budget_pages_Mio": 768,
+    "première_trame_3D": 2311
+  },
+  "manette": {
+    "session": "005219",
+    "source": "DualSense",
+    "suivi_s": 409.777,
+    "appui": "Croix",
+    "macOS_ms": 127,
+    "HUD_Victory_ms": 131
+  },
+  "fin": {
+    "code": 5,
+    "capture_cibles": 329,
+    "trame_ms": 40622.3,
+    "éclairage": "Les plafonniers sont visibles. Le fond de la pièce reste sombre."
+  }
+}

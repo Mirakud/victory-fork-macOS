@@ -647,6 +647,15 @@ pub(crate) fn dump_targets(frame: u64) {
         if d.SampleDesc.Count > 1 || d.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D {
             continue;
         }
+        // Keep a lamp comparison below the title's progress watchdog. The four
+        // per-draw readbacks are recorded separately on the rendering list.
+        static ROOM_ONLY: LazyLock<bool> = LazyLock::new(|| std::env::var_os("VICTORY_CAPTURE_ROOM_TARGETS").is_some());
+        if *ROOM_ONLY && target_frame(frame) {
+            let size = (d.Width, d.Height, d.Format.0);
+            if !matches!(size, (1280, 720, 27) | (1920, 1080, 67) | (1, 1, 2 | 10)) {
+                continue;
+            }
+        }
         // Every submission has run; the dump's list moves it there and back.
         let state = copy.state.load(Relaxed);
         dump_one(host, texture, state, frame, i, *resource as crate::object::This, &d);

@@ -1,0 +1,71 @@
+{
+  "session": "035459",
+  "date": "2026-11-28",
+  "machine": "Mac M2, 24 Go",
+  "console": "Series S",
+  "engine_sha256": "063241e43b6b760ff9c87c0628935b3de91fbb8d46452f22b7934ad907e676bd",
+  "fixtures_sha256": "665b126967cfadd7473863e911ba1e3990983bab54dabef86a3bc1e58df93e04",
+  "shader_pack_entries": [
+    2319,
+    682
+  ],
+  "shader_pack_load_ms": [
+    131,
+    39
+  ],
+  "native_pipeline_workers": 4,
+  "final_exports_verified": 25,
+  "exit_code": 0,
+  "floor": {
+    "frame": 3306,
+    "projected_pixels_per_fixture": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "samples": 108951,
+    "brighter_samples": 108887,
+    "matched_points_lit_in_both_views": 5487,
+    "display_test": {
+      "frames": [
+        3318,
+        3327,
+        3335
+      ],
+      "samples": 98245,
+      "mean_luma_8bit": [
+        22.208715,
+        12.536953,
+        18.79067
+      ]
+    }
+  },
+  "captures": [
+    {
+      "frame": 3267,
+      "image": "035459-cellule.png",
+      "sha256": "e1716eee50acc4ab8aa522bb0ab33b36abd16444724c39e7bc43c7c73a91829f"
+    },
+    {
+      "frame": 3289,
+      "image": "035459-plafond.png",
+      "sha256": "2169e9284ccee4e63b00790dba587fb17c4b9f0040795ba031acee832b5b85c4"
+    },
+    {
+      "frame": 3306,
+      "image": "035459-sol-hors-champ.png",
+      "sha256": "6709f579dd129c59a3e2f03dfd68cc598d30b5e2295365d50685e8cb7dea2210"
+    },
+    {
+      "frame": 3327,
+      "image": "035459-sol-eteint.png",
+      "sha256": "88f8f1db58213dd8cd4d6e6ba8d901ce9f6de2a4094484fb80fcd14b0085cf7f"
+    },
+    {
+      "frame": 3335,
+      "image": "035459-sol-rallume.png",
+      "sha256": "28568c6c5ccd93851b28a6ca7b41e2e7572f2778523ad4b6ddf14885bf345615"
+    }
+  ]
+}

@@ -23,11 +23,14 @@ pub(crate) struct Sample {
     original: Option<Read>,
     replay: Option<Read>,
     stencil: Option<Read>,
+    room_inputs: Vec<(&'static str, Read, usize)>,
+    room_constants: Vec<(&'static str, Vec<u8>)>,
 }
 
 impl Sample {
     pub(crate) fn begin(list: &HostList, frame: u64, pipeline: This, prefixes: &[String], slots: &[usize], depth: This, reference: u32) -> Option<Self> {
         let [colour] = slots else { return None };
+        if !crate::pipeline::is_prison_light_volume(pipeline) { return None; }
         let pass = crate::pipeline::host_pipeline(pipeline)?;
         let (idx, &hash) = HASHES.iter().enumerate().find(|(_, hash)| {
             prefixes.iter().any(|p| hash.starts_with(p)) && pass.stages.iter().any(|s| s.shader.hash == **hash)
@@ -40,14 +43,65 @@ impl Sample {
             || !list.tracks_render_target(&texture) || LAST[idx].fetch_max(frame, Relaxed) >= frame {
             return None;
         }
-        let before = read_render_target(list, &texture)?;
+        Self::snapshot(list, frame, format!("light-f{frame}-{hash}-rtv{colour:x}"), texture, depth, reference)
+    }
+
+    /// Copy the true colour and stencil at a known recorded light operation.
+    pub(crate) fn snapshot(list: &HostList, frame: u64, stem: String, texture: &ID3D12Resource, depth: This, reference: u32) -> Option<Self> {
+        let before = read_render_target(list, texture)?;
         let stencil = Self::read_stencil(list, depth);
         // A closed command list can be submitted again after the diagnostic was
         // saved. D3D12 needs the copy destinations to live until its reset.
         list.keep(&before.0);
         if let Some((buffer, _)) = &stencil { list.keep(buffer); }
-        Some(Self { stem: format!("light-f{frame}-{hash}-rtv{colour:x}"), frame, reference, depth: depth as usize,
-            texture: texture.clone(), before, original: None, replay: None, stencil })
+        Some(Self { stem, frame, reference, depth: depth as usize,
+            texture: texture.clone(), before, original: None, replay: None, stencil, room_inputs: Vec::new(), room_constants: Vec::new() })
+    }
+
+    /// Capture the actual material, normal and reverse-Z input of this light.
+    /// Only the explicitly selected room draw calls this, after its fence the
+    /// raw rows can be reprojected with the camera constants of the same draw.
+    pub(crate) fn room_inputs(&mut self, list: &HostList, mat: This, normal: This, depth: This) {
+        let Some(host) = crate::host::host() else { return };
+        for (name, id) in [("material", mat), ("normal", normal), ("depth", depth)] {
+            let Some(texture) = crate::resource::host_made(id) else { continue };
+            let desc = unsafe { texture.GetDesc() };
+            if desc.Width != 1280 || desc.Height != 720 || desc.DepthOrArraySize != 1
+                || desc.MipLevels != 1 || desc.SampleDesc.Count != 1 { continue; }
+            let mut row = 0;
+            // SAFETY: subresource zero is present and row is a live output.
+            unsafe { host.device.GetCopyableFootprints(&desc, 0, 1, 0, None, None, Some(&mut row), None) };
+            if row % desc.Width != 0 || !(1..=16).contains(&(row / desc.Width)) { continue; }
+            let copy = D3D12_RESOURCE_STATE_COPY_SOURCE;
+            let Some((texture, old)) = list.transition(id, copy.0 as u32) else { continue };
+            unsafe { list.list.ResourceBarrier(&[crate::host::transition(texture, D3D12_RESOURCE_STATES(old as i32), copy)]) };
+            let read = read_back_of(&host.device, &list.list, texture, 0);
+            crate::list::ensure_state(list, id, old);
+            if let Some(read) = read {
+                list.keep(&read.0);
+                self.room_inputs.push((name, read, (row / desc.Width) as usize));
+            }
+        }
+    }
+
+    pub(crate) fn input_buffer(&mut self, name: &'static str, addr: u64, size: u64) {
+        if addr == 0 || !(1..=1048576).contains(&size) { return; }
+        let mut bytes = vec![0; size as usize];
+        if crate::host::read_into(addr as *const u8, &mut bytes) {
+            self.room_constants.push((name, bytes));
+        }
+    }
+
+    fn save_raw(&self, name: &str, read: &Read, stride: usize) {
+        let Some(folder) = folder() else { return };
+        Self::rows(read, stride, |rows,w,h,pitch| {
+            if pitch < w * stride { return; }
+            let mut data = Vec::with_capacity(w*h*stride);
+            for y in 0..h { data.extend_from_slice(&rows[y*pitch..y*pitch+w*stride]); }
+            let fmt = read.1.Footprint.Format.0;
+            let file = folder.join(format!("{}-{name}-{w}x{h}-fmt{fmt}-bpp{stride}.bin", self.stem));
+            if let Err(error) = std::fs::write(file, data) { tracing::warn!(%error, "room input not saved"); }
+        });
     }
 
     fn read_stencil(list: &HostList, depth: This) -> Option<Read> {
@@ -84,6 +138,17 @@ impl Sample {
     /// Called by read_backs after the same submission's fence, for sync and
     /// asynchronous lists. PFM luminance uses the same sampling grid as PNG.
     pub(crate) fn landed(self) {
+        if !self.room_inputs.is_empty() {
+            self.save_raw("emission", &self.before, 8);
+            if let Some(folder) = folder() {
+                for (name, bytes) in &self.room_constants {
+                    if let Err(error) = std::fs::write(folder.join(format!("{}-{name}.bin", self.stem)), bytes) {
+                        tracing::warn!(%error, "room buffer not saved");
+                    }
+                }
+            }
+            for (name, plane, stride) in &self.room_inputs { self.save_raw(name, plane, *stride); }
+        }
         if let Some(stencil) = &self.stencil {
             stencil_values(&stencil.0, &stencil.1, self.frame, self.depth as This);
             Self::rows(stencil, 1, |rows, w, h, pitch| {

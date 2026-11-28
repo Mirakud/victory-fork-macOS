@@ -85,7 +85,7 @@ PRISON = {
 }
 
 
-# Parcours Series S validé sur la copie de sauvegarde de la session 013918.
+# Profil Series S avec suivi natif de la DualSense.
 SERIES_S = {
     "VICTORY_PIPELINE_WORKERS": "4",
     "VICTORY_TEXTURE_BUDGET_MB": "512",
@@ -220,7 +220,23 @@ def run_profile(resources):
     p.add_argument("--pipeline-manifest", type=absolute, help="liste privée de clés à préparer")
     p.add_argument("--perf-hud", action="store_true", help="afficher les FPS mesurés et la mémoire de Victory au-dessus du jeu")
     p.add_argument("--preview", action="store_true", help="afficher la commande sans créer de dossier ni lancer Wine")
+    p.add_argument("--prison-013918", action="store_true", help="utiliser le profil Series S historique")
+    p.add_argument("--shader-preparer", type=absolute, help="outil ARM64 victory-corpus-prepare pour apprendre les shaders manquants")
     args = p.parse_args()
+    if args.prison_013918 and not args.series_s:
+        p.error("--prison-013918 nécessite --series-s")
+    room_emitters = TOOLS / "plafonniers-cellule.txt" if args.series_s and not args.prison_013918 else None
+    if args.shader_preparer and not (room_emitters and args.shader_overlay and args.shader_pack):
+        p.error("--shader-preparer nécessite le profil Series S actuel, un pack et un complément")
+    if args.shader_preparer and not os.access(args.shader_preparer, os.X_OK):
+        p.error(f"Préparateur inexécutable : {args.shader_preparer}")
+    fixed_overlay = args.shader_overlay
+    learning_cache = args.output / "shader-learning"
+    preparer = None
+    if room_emitters and args.shader_overlay and args.shader_pack:
+        preparer = args.shader_preparer or shutil.which("victory-corpus-prepare")
+    if room_emitters and not room_emitters.is_file():
+        p.error(f"Calibration des plafonniers absente : {room_emitters}")
     for path in (args.victory, args.title, args.shader_pack, args.shader_overlay, args.pipeline_manifest, args.shader_names, args.belobug_cascade_pack):
         if path and not path.is_file():
             p.error(f"fichier manquant : {path}")
@@ -231,6 +247,9 @@ def run_profile(resources):
         p.error("le dossier de sortie doit être hors des données à copier")
     if (args.shader_overlay or args.capture_shader_misses or args.shader_refusal_cache) and not args.shader_pack:
         p.error("les options de traduction demandées nécessitent --shader-pack")
+    if preparer:
+        from learned_shaders import select_fixed_overlay
+        args.shader_overlay = select_fixed_overlay(fixed_overlay, sha256(args.shader_pack), sha256(fixed_overlay), learning_cache)
     if len(args.prewarm_pipeline) > 8 or len(args.required_pipeline) > 8:
         p.error("huit clés au maximum pour chaque sélection de pipelines")
     settings = None
@@ -277,6 +296,12 @@ def run_profile(resources):
         config.update(SERIES_S)
         config["VICTORY_ROOM_LIGHT_FILE"] = drive_z(run / "lampes-cellule")
         config["VICTORY_CAPTURE_TARGETS_FILE"] = drive_z(run / "capture-targets")
+    if room_emitters:
+        light_switch = run / "diffusion-cellule"
+        config["VICTORY_ROOM_EMITTERS_FILE"] = drive_z(room_emitters)
+        config["VICTORY_ROOM_DIFFUSE_FILE"] = drive_z(light_switch)
+        if not args.preview:
+            light_switch.touch()
     if args.prison_peau:
         config.pop("VICTORY_TRACE_STALLED_MESH")
         config.update(VICTORY_PARALLEL_CARD_DIGEST="1", VICTORY_CARD_REHASH_RUNS="1",
@@ -342,6 +367,10 @@ def run_profile(resources):
               "intro_profile": args.intro_profile, "prison_profile": args.prison_profile, "prison_peau": args.prison_peau, "series_s": args.series_s, "capture_shader_misses": args.capture_shader_misses}
     if args.series_s or args.prison_peau:
         record["victory_sha256"] = sha256(args.victory)
+    if room_emitters:
+        record["room_emitters_sha256"] = sha256(room_emitters)
+    if preparer:
+        record["fixed_shader_overlay_sha256"] = sha256(fixed_overlay)
     if args.bvh_scan_records:
         record["bvh_scan_records"] = str(args.bvh_scan_records)
     for name, pack in (("readonly_shader_pack", args.shader_pack), ("readonly_shader_overlay", args.shader_overlay),
@@ -375,6 +404,12 @@ def run_profile(resources):
                 signal.signal(sig, handler)
     record["exit_code"] = rc
     (run / "launch.json").write_text(json.dumps(record, indent=2))
+    if preparer and any((run / "shader-misses").iterdir()):
+        from learned_shaders import extend_fixed
+        try:
+            print(extend_fixed(run, fixed_overlay, Path(preparer), learning_cache))
+        except (OSError, ValueError, subprocess.CalledProcessError) as error:
+            print(f"Préparation des nouveaux shaders à reprendre : {error}", file=sys.stderr)
     return rc
 
 

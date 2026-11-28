@@ -4,12 +4,18 @@ version = "0.1.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
 publish = false
+default-run = "victory-prepare-shaders"
 
 [workspace]
 
 [[bin]]
 name = "victory-prepare-shaders"
 path = "main.rs"
+required-features = ["diagnostics"]
+
+[[bin]]
+name = "victory-corpus-prepare"
+path = "corpus/main.rs"
 required-features = ["diagnostics"]
 
 [features]

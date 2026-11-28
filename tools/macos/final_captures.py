@@ -42,11 +42,19 @@ class FinalCaptures:
                         if not row.endswith(b"\n"):
                             break
                         history_pos += len(row)
-                        sample = json.loads(row)
-                        if sample.get("game_pid") and (not timestamps or sample["updated"] >= timestamps[-1]):
-                            timestamps.append(sample["updated"])
+                        try:
+                            sample = json.loads(row)
+                        except (UnicodeError, ValueError):
+                            continue
+                        if not isinstance(sample, dict) or not sample.get("game_pid"):
+                            continue
+                        stamp = sample.get("updated")
+                        if type(stamp) not in (int, float) or not 0 <= stamp < 253402300799:
+                            continue
+                        if not timestamps or stamp >= timestamps[-1]:
+                            timestamps.append(stamp)
                             samples.append(sample)
-            except FileNotFoundError:
+            except OSError:
                 pass
             if raw.is_dir():
                 output.mkdir(exist_ok=True)

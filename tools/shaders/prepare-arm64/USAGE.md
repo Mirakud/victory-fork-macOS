@@ -12,7 +12,9 @@ cargo build --locked --release --manifest-path tools/shaders/prepare-arm64/Cargo
 prep="$work/build/release/victory-prepare-shaders"
 ```
 
-La commande `"$prep" identity` affiche la clé que le préparateur inscrit dans les octets 8 à 39 des packs VSP1. Le profil public avec diagnostics et réglages de traduction par défaut utilise `d6b56b368b0f6ce27b5b819dc4b894255b9ef61d1933c67010652f6a2cb6bb62`. Les packs de l’essai privé D3 portent la clé `578b25415d58675d5ba8637836bf4f93baf92f43cb501d6a0365e01c3cec4218`. Pour utiliser ces mêmes shaders avec le lecteur public, reconstruisez votre pack et votre overlay depuis vos conteneurs personnels avec les commandes suivantes.
+La commande `"$prep" identity` affiche la clé que le préparateur inscrit dans les octets 8 à 39 des packs VSP1. Les packs de la session 035459 portent la clé `578b25415d58675d5ba8637836bf4f93baf92f43cb501d6a0365e01c3cec4218`. Vérifiez la clé de votre compilation avant de réutiliser un pack.
+
+Le préparateur utilise jusqu’à six travailleurs ARM64. `VICTORY_SHADER_JOBS` permet de choisir de 1 à 64 travailleurs. La commande de compilation ci-dessus produit aussi `$work/build/release/victory-corpus-prepare`. Avec le raccourci Series S, ajoutez `--shader-preparer "$work/build/release/victory-corpus-prepare"` lorsque vous fournissez `--shader-pack` et `--shader-overlay`. Le lanceur prépare les nouvelles traductions après la partie et les retrouve au lancement suivant dans le même dossier de sortie. Les entrées du complément fourni gardent leur contenu et leur priorité.
 
 Pour amorcer un premier pack, fournissez un fichier SGD5 personnel ou une archive du jeu contenant un SGD5. `extract` lit l’archive en mémoire et s’arrête après le nombre demandé de conteneurs distincts. Pour une session qui possède déjà un dossier `shader-misses`, utilisez directement ce dossier comme valeur de `inputs` et passez à `pack`.
 

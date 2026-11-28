@@ -7,7 +7,8 @@ use anyhow::{Context, Result, bail, ensure};
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::thread;
 
 const USAGE: &str = "victory-prepare-shaders extract ARCHIVE INPUTS LIMIT\n\
                      victory-prepare-shaders warm INPUTS CACHE\n\
@@ -125,15 +126,14 @@ fn read_input(directory: &Path, id: &str) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn cached_blob(cache: &Path, build: blake3::Hash, guest: &[u8]) -> Result<Vec<u8>> {
+fn cached_path(cache: &Path, build: blake3::Hash, guest: &[u8]) -> PathBuf {
     let mut h = blake3::Hasher::new();
     h.update(b"shader.dxil\0");
     h.update(&1u32.to_le_bytes());
     h.update(build.as_bytes());
     h.update(guest);
     let key = h.finalize().to_hex();
-    let path = cache.join(&key[..2]).join(&key[2..]);
-    fs::read(&path).with_context(|| path.display().to_string())
+    cache.join(&key[..2]).join(&key[2..])
 }
 
 fn verify(inputs: &Path, pack: &Path, build: blake3::Hash) -> Result<()> {
@@ -182,6 +182,41 @@ fn verify(inputs: &Path, pack: &Path, build: blake3::Hash) -> Result<()> {
     Ok(())
 }
 
+fn prepare_container(
+    inputs: &Path,
+    id: &str,
+    cache: &Path,
+    build: blake3::Hash,
+) -> Result<Option<PathBuf>> {
+    let guest = read_input(inputs, id)?;
+    match shader_cache::warm(&guest) {
+        Ok(_) => Ok(Some(cached_path(cache, build, &guest))),
+        Err(error) if error.starts_with("converter shader.dxil v1: ") => {
+            eprintln!("refused {id}: {error}");
+            Ok(None)
+        }
+        Err(error) => bail!("{id}: {error}"),
+    }
+}
+
+fn worker_count() -> Result<usize> {
+    if let Some(value) = std::env::var_os("VICTORY_SHADER_JOBS") {
+        let jobs: usize = value
+            .to_str()
+            .context("invalid VICTORY_SHADER_JOBS")?
+            .parse()?;
+        ensure!(
+            (1..=64).contains(&jobs),
+            "VICTORY_SHADER_JOBS must be in 1..=64"
+        );
+        return Ok(jobs);
+    }
+    Ok(thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1)
+        .min(6))
+}
+
 fn prepare(inputs: &Path, cache: &Path, output: Option<&Path>, build: blake3::Hash) -> Result<()> {
     let ids = input_ids(inputs)?;
     if let Some(path) = output {
@@ -202,25 +237,42 @@ fn prepare(inputs: &Path, cache: &Path, output: Option<&Path>, build: blake3::Ha
     }
     let mut count = 0u32;
     let mut refused = 0usize;
-    for id in ids {
-        let guest = read_input(inputs, &id)?;
-        match shader_cache::warm(&guest) {
-            Ok(_) => {}
-            Err(error) if error.starts_with("converter shader.dxil v1: ") => {
-                eprintln!("refused {id}: {error}");
-                refused += 1;
-                continue;
-            }
-            Err(error) => bail!("{id}: {error}"),
+    let jobs = worker_count()?.min(ids.len());
+    // Each worker releases its decoded buffers before the next translation.
+    // Join chunks in input order so worker count cannot change the VSP1 bytes.
+    let prepared = thread::scope(|scope| -> Result<Vec<Option<PathBuf>>> {
+        let mut workers = Vec::new();
+        for chunk in ids.chunks(ids.len().div_ceil(jobs)) {
+            workers.push(scope.spawn(move || {
+                chunk
+                    .iter()
+                    .map(|id| prepare_container(inputs, id, cache, build))
+                    .collect::<Result<Vec<_>>>()
+            }));
         }
+        let mut paths = Vec::with_capacity(ids.len());
+        for worker in workers {
+            paths.extend(
+                worker
+                    .join()
+                    .map_err(|_| anyhow::anyhow!("translation worker panicked"))??,
+            );
+        }
+        Ok(paths)
+    })?;
+    for (id, path) in ids.iter().zip(prepared) {
+        let Some(path) = path else {
+            refused += 1;
+            continue;
+        };
         count += 1;
         if output.is_some() {
-            let blob = cached_blob(cache, build, &guest)?;
+            let blob = fs::read(&path).with_context(|| path.display().to_string())?;
             ensure!(
                 pack.len() + 36 + blob.len() + 32 <= MAX_PACK,
                 "pack exceeds 256 MiB"
             );
-            pack.extend_from_slice(blake3::Hash::from_hex(&id)?.as_bytes());
+            pack.extend_from_slice(blake3::Hash::from_hex(id)?.as_bytes());
             pack.extend_from_slice(&(blob.len() as u32).to_le_bytes());
             pack.extend_from_slice(&blob);
         }

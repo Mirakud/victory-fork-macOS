@@ -1,20 +1,30 @@
 # Victory sur macOS
 
-<a href="docs/macos/m2-series-s-cour.png"><img src="docs/macos/m2-series-s-cour.png" alt="Une détenue en tenue rouge regarde vers la cour de la prison au coucher du soleil sur Mac M2" width="960"></a>
+<a href="docs/macos/035459-cellule.png"><img src="docs/macos/035459-cellule.png" alt="Depuis les lits, vue de la cellule éclairée sur Mac M2, avec les mesures de performances au-dessus du jeu" width="960"></a>
 
-*Prison, profil Series S sur Mac M2 avec 24 Go de mémoire unifiée. Capture en jeu du 28 novembre 2026.*
+*Prison sur Mac M2, 24 Go de mémoire unifiée. Image 3267 du 28 novembre 2026.*
 
-| Depuis le seuil de la cellule | Sous les plafonniers |
+Les quatre plafonniers éclairent le sol et les murs de la cellule même quand le joueur baisse la caméra. Dans la vue hors champ ci-dessous, 108 887 des 108 951 échantillons du plancher reçoivent de la lumière. Sur la dernière vue plongeante, la luminosité moyenne affichée du même matériau passe de 22,21 à 12,54 sur 255 à l’extinction, puis remonte à 18,79 au rallumage. [Mesures et empreintes des captures](docs/macos/035459-series-s-m2.json)
+
+Le profil Series S suit la DualSense physique avec GameController. Sur cet essai, le M2 a chargé les deux packs de 2 319 et 682 traductions en 131 et 39 ms. Quatre travailleurs préparent les pipelines. La préparation ARM64 à froid de 192 shaders a pris 3,74 s avec six travailleurs, contre 10,21 s avec un seul. Le rendu de la prison prend encore plusieurs secondes par image. [Lanceur Series S](tools/run_victory_series_s_mac.command) · [Sources du moteur de la session 035459](https://github.com/Mirakud/victory-fork-macOS/tree/series-s-m2-035459)
+
+### Photos de la cellule sur Mac M2
+
+| Plafond, image 3289 | Sol avec les quatre lampes hors champ, image 3306 |
 | --- | --- |
-| [![Profil du personnage devant la cour au soleil couchant](docs/macos/m2-series-s-seuil.png)](docs/macos/m2-series-s-seuil.png) | [![Vue intérieure avec trois plafonniers, les lits et la porte de la cellule](docs/macos/m2-series-s-cellule.png)](docs/macos/m2-series-s-cellule.png) |
+| [![Les tubes du quatrième plafonnier au bord droit de la cellule](docs/macos/035459-plafond.png)](docs/macos/035459-plafond.png) | [![Le sol reste éclairé entre les pieds des lits](docs/macos/035459-sol-hors-champ.png)](docs/macos/035459-sol-hors-champ.png) |
+| **Lampes éteintes, image 3327** | **Lampes rallumées, image 3335** |
+| [![Vue plongeante, les détails du sol disparaissent à l’extinction](docs/macos/035459-sol-eteint.png)](docs/macos/035459-sol-eteint.png) | [![Le grain du sol et le mobilier réapparaissent au rallumage](docs/macos/035459-sol-rallume.png)](docs/macos/035459-sol-rallume.png) |
 
-Le bandeau au-dessus de chaque image indique les FPS, le CPU et la RAM de Victory, le temps par image, l’attente GPU et le temps de copie. Les relevés CPU et RAM se situent à moins de 0,75 seconde des captures. Les chronos de la cour et du seuil viennent du dernier relevé du HUD. Ceux de la cellule incluent le prélèvement de diagnostic.
+Le bandeau des captures indique les FPS, le CPU et la RAM de Victory, le temps par image, l’attente GPU et le temps de copie. Chaque export porte le filigrane « mirakud » en bas à droite.
 
-Le lanceur **Series S sur Mac** utilise la DualSense physique via GameController. Un appui sur Croix a été mesuré à 127 ms sur macOS et 131 ms dans le panneau de Victory. Le panneau suit aussi les boutons quand le jeu perd le focus. [Lanceur Series S](tools/run_victory_series_s_mac.command)
+### Vues de la version précédente sur Mac M2
 
-La session photographiée a chargé **2 319 traductions en 143 ms**, puis **682 en 42 ms**. Quatre travailleurs préparent les pipelines graphiques. Le moteur charge en priorité les textures des matériaux dessinés. Les trois néons sont visibles dans la cellule, dont le fond et les lits restent sombres. Un prélèvement de 329 cibles a occupé une trame de 40,6 secondes et le jeu a interrompu cette session. [Mesures et empreintes](docs/macos/013918-series-s-m2.json)
+| Cour au coucher du soleil | Seuil de la cellule | Intérieur avant la correction |
+| --- | --- | --- |
+| [![La cour de la prison](docs/macos/m2-series-s-cour.png)](docs/macos/m2-series-s-cour.png) | [![Personnage de profil au seuil](docs/macos/m2-series-s-seuil.png)](docs/macos/m2-series-s-seuil.png) | [![Les néons visibles au-dessus des lits dans la session 013918](docs/macos/m2-series-s-cellule.png)](docs/macos/m2-series-s-cellule.png) |
 
-Pour reconstruire le moteur utilisé dans ces trois captures, la branche `series-s-m2-013918` contient les sources de cet essai. Le raccourci accepte les chemins de votre installation Wine et de votre copie du jeu. Les caches et les données du joueur se préparent localement. [Sources du moteur photographié](https://github.com/Mirakud/victory-fork-macOS/tree/series-s-m2-013918) · [Compilation sous Windows et lancement sur macOS](#démarrer-victory)
+Ces trois vues proviennent de la session 013918. Le relevé de 40,6 s sur l’image de la cellule inclut le prélèvement de 329 cibles de diagnostic. [Mesures de la session précédente](docs/macos/013918-series-s-m2.json) · [Sources de cette version](https://github.com/Mirakud/victory-fork-macOS/tree/series-s-m2-013918)
 
 ## Prison sur Mac M3, 27 novembre
 
@@ -152,6 +162,14 @@ python3 tools/macos/run.py \
     --output "$RUNS_DIR" --preview
 ```
 
+Pour reproduire la session M2 avec la calibration des quatre plafonniers fournie dans le dépôt, utilisez le raccourci Series S avec votre moteur et votre copie du profil. Retirez `--preview` pour jouer.
+
+```sh
+./tools/run_victory_series_s_mac.command \
+    --victory "$VICTORY_EXE" --title "$TITLE_EXE" --engine "$SIKARUGIR_ENGINE" \
+    --bottle "$VICTORY_BOTTLE" --output "$RUNS_DIR" --data "$VICTORY_DATA" --preview
+```
+
 Le raccourci du dépôt `tools/run_victory_d3dmetal4_mac.command` accepte les mêmes chemins et sélectionne directement le profil prison. Avec `run.py`, ajoutez `--prison-profile --data "$VICTORY_DATA"` à cette commande. Avec le raccourci, seul `--data "$VICTORY_DATA"` est à ajouter aux chemins. Pour reproduire le préchauffage, fournissez aussi `--shader-pack "$SHADER_PACK" --shader-overlay "$SHADER_OVERLAY" --pipeline-manifest "$PIPELINE_MANIFEST"` avec vos fichiers locaux compatibles. Ce profil active le panneau Shaders A/B, applique les distances de détail de la session et laisse macOS gérer la RAM. Le moniteur continue à surveiller les erreurs mémoire Metal.
 
 Pour lancer **Prison avec HUD**, utilisez la commande ci-dessous avec le moteur construit depuis cette révision, votre profil et vos caches locaux. Le raccourci active la préparation des textures de peau et le panneau des entrées. Dans la cinématique, maintenez la commande **A** du jeu (croix sur DualSense).
@@ -165,7 +183,7 @@ Pour lancer **Prison avec HUD**, utilisez la commande ci-dessous avec le moteur 
     --shader-store "$SHADER_STORE" --pipeline-manifest "$PIPELINE_MANIFEST" --preview
 ```
 
-Le dossier `SHADER_STORE` contient les traductions privées pour la version du traducteur utilisée. Le traducteur de cette publication et celui du banc local ont des empreintes différentes. Régénérez les packs et le répertoire de traductions avec le préparateur compilé depuis ce dépôt. Le catalogue JSON de noms peut être fourni avec `--shader-names` pour reconnaître davantage de paires dans le panneau. [Construction et vérification des caches](tools/shaders/prepare-arm64/USAGE.md)
+Le dossier `SHADER_STORE` contient les traductions privées pour la version du traducteur utilisée. Comparez la clé de vos packs avec celle du préparateur compilé depuis la même révision que le moteur. Si elles diffèrent, régénérez vos traductions depuis vos conteneurs locaux. Le catalogue JSON de noms peut être fourni avec `--shader-names` pour reconnaître davantage de paires dans le panneau. [Construction et vérification des caches](tools/shaders/prepare-arm64/USAGE.md)
 
 Le profil mesuré utilisait une copie de Sikarugir équipée d’un pilote CoreAudio recompilé depuis Wine 10.0. Ce correctif permet aux minuteries des flux audio à l’arrêt de dormir jusqu’à leur reprise. Il s’applique à la racine des sources Wine 10.0 avec `patch -p1 < wine-10.0-coreaudio.diff.txt`. Le pilote conserve la licence LGPL-2.1-or-later. [Correctif source](docs/macos/wine-10.0-coreaudio.diff.txt) · [Licence Wine](docs/macos/wine-LGPL-2.1.txt)
 

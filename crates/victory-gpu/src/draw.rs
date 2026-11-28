@@ -29,6 +29,9 @@ use crate::object::This;
 use crate::pipeline::host::HostPipeline;
 
 #[cfg(feature = "diagnostics")]
+mod room_diffuse;
+
+#[cfg(feature = "diagnostics")]
 #[path = "capture/tile_args.rs"]
 pub(crate) mod tile_args;
 
@@ -3519,6 +3522,8 @@ impl State {
             }
             #[cfg(feature = "diagnostics")]
             if let Some(sample) = light { list.note_light_sample(sample); }
+            #[cfg(feature = "diagnostics")]
+            room_diffuse::after_light(self, list);
             DRAWN.fetch_add(1, Ordering::Relaxed);
         }
         if !ran {

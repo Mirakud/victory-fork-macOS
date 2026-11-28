@@ -207,6 +207,7 @@ pub(super) fn take_grouped_counts() -> [u64; 4] {
 }
 
 type SavedRuns = (Key, Arc<[Range<usize>]>);
+const READ_WINDOW: usize = 1 << 20;
 const RUN_BUCKETS: usize = 4096;
 struct ReadRuns([Mutex<Option<SavedRuns>>; RUN_BUCKETS]);
 
@@ -219,6 +220,12 @@ impl ReadRuns {
         let mut hash = DefaultHasher::new();
         key.hash(&mut hash);
         &self.0[hash.finish() as usize % self.0.len()]
+    }
+
+    fn lookup(&self, key: Key) -> Option<Arc<[Range<usize>]>> {
+        self.bucket(key).lock().unwrap_or_else(|e| e.into_inner())
+            .as_ref().filter(|(held, _)| *held == key)
+            .map(|(_, runs)| Arc::clone(runs))
     }
 
     fn walk(
@@ -234,12 +241,15 @@ impl ReadRuns {
         };
         let key = (address, len);
         let bucket = self.bucket(key);
-        let previous = bucket
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-            .filter(|(k, _)| *k == key)
-            .map(|(_, runs)| Arc::clone(runs));
+        let previous = self.lookup(key);
+        // Partially covered endpoints can use the readable ranges learned for
+        // the entire aligned window. Only a fresh kernel read grants access.
+        // Keep partial discoveries under their own key, so they cannot evict
+        // the unvisited parts of the full window by design.
+        let aligned = address & !(READ_WINDOW - 1);
+        let canonical = if previous.is_none() && len < READ_WINDOW && end - aligned <= READ_WINDOW {
+            self.lookup((aligned, READ_WINDOW))
+        } else { None };
         let mut runs = Vec::<Range<usize>>::new();
         let mut checked_read = |at, n| {
             let ok = read(at, n);
@@ -282,10 +292,14 @@ impl ReadRuns {
             skipped += count;
         };
         let mut cursor = address;
-        for run in previous.as_deref().unwrap_or_default() {
-            visit(cursor, run.start, false);
-            visit(run.start, run.end, true);
-            cursor = run.end;
+        for run in previous.as_deref().or(canonical.as_deref()).unwrap_or_default() {
+            let lo = run.start.max(address);
+            let hi = run.end.min(end);
+            if lo < hi {
+                visit(cursor, lo, false);
+                visit(lo, hi, true);
+                cursor = hi;
+            }
         }
         visit(cursor, end, false);
         for (counter, n) in GROUPED.iter().zip([attempts, successes, bytes]) {
@@ -336,7 +350,6 @@ fn walk_windows(
     mut read: impl FnMut(usize, usize) -> bool,
     mut zero: impl FnMut(usize, usize),
 ) -> (bool, u64) {
-    const WINDOW: usize = 1 << 20;
     let Some(end) = address.checked_add(len) else {
         return walk(address, len, true, query, read, zero);
     };
@@ -344,9 +357,10 @@ fn walk_windows(
     if len == 0 {
         return (true, 0);
     }
-    let mut observed = query(address)
-        .map(|(length, readable)| (address, address.saturating_add(length), readable));
-    let (mut complete, mut skipped, mut queries) = (true, 0, 1);
+    // A validated read of the first learned run needs no up-front VM query.
+    // A gap asks for the current VM region at its first byte, as usual.
+    let mut observed: Option<(usize, usize, bool)> = None;
+    let (mut complete, mut skipped, mut queries) = (true, 0, 0);
     while cursor < end {
         // A single VM query can describe a hole spanning many windows.
         // Honor its full extent inside this copy, just as walk() does.
@@ -359,7 +373,7 @@ fn walk_windows(
             cursor = to;
             continue;
         }
-        let n = (WINDOW - cursor % WINDOW).min(end - cursor);
+        let n = (READ_WINDOW - cursor % READ_WINDOW).min(end - cursor);
         let mut current = |at| {
             if let Some((start, stop, can_read)) = observed
                 && start <= at && at < stop
@@ -416,6 +430,71 @@ mod tests {
             assert!(bytes.iter().all(|&b| b == if *page { value } else { 0 }));
         }
         (queries, reads)
+    }
+
+    #[test]
+    fn partial_endpoint_uses_canonical_runs_and_live_data_across_remaps() {
+        use std::cell::{Cell, RefCell};
+
+        let runs = ReadRuns::new();
+        let base = 0x8000_0000;
+        let len = READ_WINDOW;
+        let hole = Cell::new(6usize);
+        let next_hole = 11;
+        let tag = Cell::new(0x36u8);
+        let switch = Cell::new(false);
+        let queries = Cell::new(0usize);
+        let failed_mid_copy = Cell::new(false);
+        let output = RefCell::new(vec![0xa1u8; len + 2]);
+        let apply = |lo: usize, hi: usize| {
+            output.borrow_mut().fill(0xa1);
+            queries.set(0);
+            let answer = runs.walk(base + lo, hi - lo, |at| {
+                queries.set(queries.get() + 1);
+                let offset = at - base;
+                Some((PAGE - offset % PAGE, offset / PAGE != hole.get()))
+            }, |at, n| {
+                if switch.get() && at < base + next_hole * PAGE && at + n > base + next_hole * PAGE {
+                    switch.set(false);
+                    hole.set(next_hole);
+                    failed_mid_copy.set(true);
+                }
+                let mut out = output.borrow_mut();
+                for i in at - base..at - base + n {
+                    // Mirror a failing ReadProcessMemory that did change its prefix.
+                    if i / PAGE == hole.get() { return false; }
+                    out[1 + i] = tag.get().wrapping_add((i % 111) as u8);
+                }
+                true
+            }, |at, n| output.borrow_mut()[1 + at-base..1 + at-base+n].fill(0));
+            let out = output.borrow();
+            let first = hole.get() * PAGE;
+            assert_eq!(answer.0, hi <= first || lo >= first + PAGE);
+            for (pos, value) in out.iter().copied().enumerate() {
+                let expected = match pos.checked_sub(1) {
+                    Some(i) if lo <= i && i < hi && i / PAGE == hole.get() => 0,
+                    Some(i) if lo <= i && i < hi => tag.get().wrapping_add((i % 111) as u8),
+                    _ => 0xa1,
+                };
+                assert_eq!(value, expected, "offset {pos}");
+            }
+        };
+        apply(0, len);
+        tag.set(0x80);
+        apply(19, len - 53);
+        assert_eq!(queries.get(), 1, "only the former single-page hole needs querying");
+        // The old hole is already mapped when this read starts. A different,
+        // later page loses protection in the middle of a speculative read.
+        // Change the old hole first, so recovery has a well-defined current
+        // value even for bytes observed before the later protection change.
+        hole.set(usize::MAX / PAGE);
+        switch.set(true);
+        tag.set(0x61);
+        apply(23, len - 57);
+        assert!(failed_mid_copy.get());
+        hole.set(usize::MAX / PAGE);
+        tag.set(0x2b);
+        apply(47, len - 71);
     }
 
     #[test]

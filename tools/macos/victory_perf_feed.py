@@ -142,14 +142,17 @@ class PerformanceHUD:
                         measured = time.monotonic()
                         break
                 recent = measured is not None and time.monotonic() - measured <= max(20, 3 * frame_ms / 1000)
-                write_state(self.path, {
+                sample = {
                     "game_pid": pid, "updated": time.time(),
                     "fps": 1000 / frame_ms if recent else None, "frame_ms": frame_ms if recent else None,
                     "gpu_ms": gpu_ms if recent else None, "copy_ms": copy_ms if recent else None,
                     "cpu_percent": cpu_percent,
                     "ram_mib": mem["footprint_bytes"] / (1 << 20) if mem else None,
                     "wired_mib": wired_memory(self.run / "telemetry.jsonl"),
-                })
+                }
+                write_state(self.path, sample)
+                with (self.run / "hud-mesures.jsonl").open("a", encoding="utf-8") as history:
+                    history.write(json.dumps(sample, separators=(",", ":")) + "\n")
                 self.stop.wait(1)
 
     def close(self):

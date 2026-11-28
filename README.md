@@ -8,6 +8,8 @@
 | --- | --- |
 | [![Profil du personnage devant la cour au soleil couchant](docs/macos/m2-series-s-seuil.png)](docs/macos/m2-series-s-seuil.png) | [![Vue intérieure avec trois plafonniers, les lits et la porte de la cellule](docs/macos/m2-series-s-cellule.png)](docs/macos/m2-series-s-cellule.png) |
 
+Le bandeau au-dessus de chaque image indique les FPS, le CPU et la RAM de Victory, le temps par image, l’attente GPU et le temps de copie. Les relevés CPU et RAM se situent à moins de 0,75 seconde des captures. Les chronos de la cour et du seuil viennent du dernier relevé du HUD. Ceux de la cellule incluent le prélèvement de diagnostic.
+
 Le lanceur **Series S sur Mac** utilise la DualSense physique via GameController. Un appui sur Croix a été mesuré à 127 ms sur macOS et 131 ms dans le panneau de Victory. Le panneau suit aussi les boutons quand le jeu perd le focus. [Lanceur Series S](tools/run_victory_series_s_mac.command)
 
 La session photographiée a chargé **2 319 traductions en 143 ms**, puis **682 en 42 ms**. Quatre travailleurs préparent les pipelines graphiques. Le moteur charge en priorité les textures des matériaux dessinés. Les trois néons sont visibles dans la cellule, dont le fond et les lits restent sombres. Un prélèvement de 329 cibles a occupé une trame de 40,6 secondes et le jeu a interrompu cette session. [Mesures et empreintes](docs/macos/013918-series-s-m2.json)
@@ -168,6 +170,8 @@ Le dossier `SHADER_STORE` contient les traductions privées pour la version du t
 Le profil mesuré utilisait une copie de Sikarugir équipée d’un pilote CoreAudio recompilé depuis Wine 10.0. Ce correctif permet aux minuteries des flux audio à l’arrêt de dormir jusqu’à leur reprise. Il s’applique à la racine des sources Wine 10.0 avec `patch -p1 < wine-10.0-coreaudio.diff.txt`. Le pilote conserve la licence LGPL-2.1-or-later. [Correctif source](docs/macos/wine-10.0-coreaudio.diff.txt) · [Licence Wine](docs/macos/wine-LGPL-2.1.txt)
 
 Retirer `--preview` pour exécuter. `--data` copie les données privées d’un profil dans la nouvelle session. Les options `--shader-pack` et `--pipeline-manifest` acceptent des caches et priorités générés localement pour une version compatible. Au choix de profil du jeu, confirmer Player avec Entrée. Chaque session enregistre le journal et la télémétrie. Avec les profils de rue et de cinématique, le moniteur arrête le groupe de processus à 9 216 Mio câblés ou dès l’erreur Metal de mémoire insuffisante. Le lanceur reprend les réglages de base de la rue, tandis que les profils, priorités spécifiques et entrées utilisées lors du développement restent propres aux essais.
+
+Avec Pillow 10 ou ultérieur installé dans le Python du lanceur, chaque capture de jeu produit automatiquement un PNG avec le bandeau de mesures en haut et le filigrane « mirakud » en bas à droite. Le dossier `captures/finales/` de la session contient les images à partager. Les originaux restent dans `captures/`. Un tiret indique une mesure indisponible. [Outil d’export](tools/macos/watermark.py)
 
 Pour reprendre les réglages de 011924, ajoutez `--intro-profile --data "$VICTORY_DATA"` avec votre dossier de profil. Activez `--shader-ab` pour isoler des paires graphiques dans le HUD et `--capture-shader-misses` pour enregistrer les conteneurs manquants dans le sous-dossier `shader-misses` de la session. Au lancement suivant, `--shader-overlay` accepte le fichier VSP1 préparé avec ces traductions. [Préparer et vérifier ses shaders sur Apple Silicon](tools/shaders/prepare-arm64/USAGE.md)
 

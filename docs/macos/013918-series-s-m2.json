@@ -8,22 +8,76 @@
       "frame": 2376,
       "file": "m2-series-s-cour.png",
       "width": 960,
-      "height": 540,
-      "sha256": "69e77f75d033aaaa9057445de65b6f1119b5f86477ee64201ac84e913e920f37"
+      "height": 623,
+      "sha256": "1143ca6f7bf352b6b0265afc80b8b3f308879c9cf02bd805e0c86a7a2c6a338b",
+      "source_sha256": "69e77f75d033aaaa9057445de65b6f1119b5f86477ee64201ac84e913e920f37",
+      "source_dimensions": [
+        960,
+        540
+      ],
+      "capture_utc": "2026-11-28T00:45:58.948891Z",
+      "hud_utc": "2026-11-28T00:45:58.262640Z",
+      "hud_offset_s": -0.686251,
+      "timings_utc": "2026-11-28T00:45:56.540667Z",
+      "timings_presentation_offset": -1,
+      "hud": {
+        "fps": 0.40035231003282884,
+        "cpu_percent": 266.5381628794654,
+        "ram_mib": 14709.595008850098,
+        "frame_ms": 2497.8,
+        "gpu_ms": 1002.2,
+        "copy_ms": 1091.5
+      }
     },
     "seuil": {
       "frame": 2400,
       "file": "m2-series-s-seuil.png",
       "width": 960,
-      "height": 540,
-      "sha256": "361674e753c307fb0bb4ccb370dfbd149ea9992a4c90cd7ba96ed126738c89c5"
+      "height": 623,
+      "sha256": "ef3c6ba2cc97b35bcf2655f965abe8a5a3103fdbf495d9218ea25fcb212366b9",
+      "source_sha256": "361674e753c307fb0bb4ccb370dfbd149ea9992a4c90cd7ba96ed126738c89c5",
+      "source_dimensions": [
+        960,
+        540
+      ],
+      "capture_utc": "2026-11-28T00:47:34.647071Z",
+      "hud_utc": "2026-11-28T00:47:34.698188Z",
+      "hud_offset_s": 0.051117,
+      "timings_utc": "2026-11-28T00:47:31.461128Z",
+      "timings_presentation_offset": -1,
+      "hud": {
+        "fps": 0.3636231409766918,
+        "cpu_percent": 265.9668031500382,
+        "ram_mib": 15263.219161987305,
+        "frame_ms": 2750.1,
+        "gpu_ms": 1054.2,
+        "copy_ms": 1361.6
+      }
     },
     "cellule": {
       "frame": 2428,
       "file": "m2-series-s-cellule.png",
       "width": 960,
-      "height": 540,
-      "sha256": "f83aba253d454f3c49b38e38fcbadd2565aa06607734d28de170b5e62551330d"
+      "height": 623,
+      "sha256": "3e494222f05de8af9f759d4e49642e277540f52a2b49f8ab74a716a8b8554908",
+      "source_sha256": "f83aba253d454f3c49b38e38fcbadd2565aa06607734d28de170b5e62551330d",
+      "source_dimensions": [
+        960,
+        540
+      ],
+      "capture_utc": "2026-11-28T00:50:41.540582Z",
+      "hud_utc": "2026-11-28T00:50:40.797702Z",
+      "hud_offset_s": -0.74288,
+      "timings_utc": "2026-11-28T00:50:41.542870Z",
+      "timings_presentation_offset": 0,
+      "hud": {
+        "fps": 0.024617020700452706,
+        "cpu_percent": 82.95410498433488,
+        "ram_mib": 14769.615341186523,
+        "frame_ms": 40622.3,
+        "gpu_ms": 4154.1,
+        "copy_ms": 6071.9
+      }
     }
   },
   "shaders": {
